@@ -1,0 +1,80 @@
+feature:
+  name: crypto-ai-analysis
+  product: opencharts
+  description: 基于真实加密货币现货行情的多周期技术分析、条件式入场计划、AI 解释和模拟交易能力。
+
+components:
+  MARKET_DATA:
+    requirements:
+      1: 第一版必须使用 Binance Spot 公共市场数据获取现货 K 线，不要求用户提供 API key。
+      1-1: 历史 K 线通过 REST 获取，实时 K 线通过 WebSocket 获取。
+      1-2: 第一版必须保留可替换的数据 adapter，以便未来接入后端代理、缓存或其他行情源。
+      2: 第一版支持 BTCUSDT、ETHUSDT、SOLUSDT、BNBUSDT、XRPUSDT、ADAUSDT，以及 1h、4h、1d 周期。
+      3: 行情 adapter 必须将 REST 数组和 WebSocket 事件转换为统一的现货 K 线模型。
+      3-1: 内部时间统一使用 UTC Unix epoch milliseconds，页面时区不得改变分析结果。
+      3-2: K 线模型必须保留 symbol、interval、openTimeMs、closeTimeMs、OHLCV、tradeCount、isClosed 和 source。
+      4: WebSocket adapter 必须支持重连、恢复订阅、连接状态、消息新鲜度和断线后的 REST 尾部回填。
+      5: 行情数据必须按 symbol、interval、openTimeMs 去重和 upsert，且闭合 K 线优先于未闭合版本。
+      6: 发现缺口时必须优先 REST 回填，不能使用 OHLCV 前值填充、插值或伪造成交量。
+
+  CANDLE_QUALITY:
+    requirements:
+      1: 系统必须支持用户手动触发分析和 1h K 线闭合后的自动触发。
+      1-1: 同一 symbol 和 1h openTimeMs 的闭合事件最多生成一次正式分析快照。
+      2: 未闭合 K 线只能用于实时展示，不得进入正式指标、信号、入场计划或自动分析输入。
+      3: 分析必须按 analysisTimeMs 对齐 1d、4h、1h 数据，并为每个周期选择该时间点之前最近的已闭合 K 线。
+      3-1: 自动触发的 analysisTimeMs 使用刚闭合 1h K 线的 closeTimeMs，手动触发使用 Binance server time。
+      3-2: 分析快照必须保存触发类型、analysisTimeMs 和各周期实际 candleCloseTime。
+      4: 正式分析前必须校验时间、OHLCV 有限性、价格和成交量范围、high/low 关系、周期边界、缺口和指标暖机数量。
+      5: 缺口、数据冲突、数据过期或指标暖机不足无法修复时，系统必须返回 insufficient-data 并禁止生成交易信号。
+      5-1: insufficient-data 的用户结论必须是“暂不入场”，并说明缺失周期或数据时间。
+
+  STRATEGY:
+    requirements:
+      1: 策略必须使用 1d、4h、1h 多周期趋势和回调确认，只生成现货做多计划，不生成做空计划。
+      2: 1d 多头趋势必须同时满足 close > EMA200、EMA50 > EMA200 且 EMA50 高于 5 根 K 线前的 EMA50。
+      3: 4h 多头趋势必须同时满足 close > EMA50、EMA20 > EMA50 且 EMA20 高于 3 根 K 线前的 EMA20。
+      4: 只有 1d 和 4h 同时满足多头趋势时，系统才允许寻找做多回调。
+      5: 有效 4h 回调必须在最近 6 根已闭合 4h K 线中进入 EMA20 与 EMA50 动态区域，区域边界额外放宽 0.25 ATR(14)。
+      5-1: 回调期间 4h close 不得低于 EMA50 - 0.5 ATR(14)，否则当前 setup 失效。
+      5-2: 未触及回调区域时不得追涨，必须等待新的回调 setup。
+      6: 有效回调后，1h 入场确认必须满足 EMA20 reclaim 或突破前 3 根 1h K 线最高价、当前 K 线 close > open、RSI(14) >= 50 且高于上一根。
+      7: MACD histogram 上升和成交量高于 Volume SMA(20)作为评分加分项，不作为 1h 入场硬门槛。
+      8: 策略状态必须至少区分 watch、setup、enter 和 avoid，并为 avoid 提供可追踪原因。
+
+  ANALYSIS_OUTPUT:
+    requirements:
+      1: 分析结果必须包含趋势方向、指标证据、支撑阻力、入场区间、失效条件、止损、止盈、风险收益比和置信度。
+      2: 指标冲突、数据不足、结构失效或风险收益比不达标时，分析结果必须为“暂不入场”。
+      3: 所有交易相关数值必须由可复现的确定性算法产生，不能由 AI 自由发挥或覆盖。
+
+  AI_EXPLANATION:
+    requirements:
+      1: AI 只能基于算法生成的指标、状态、价位和风险参数生成自然语言解释。
+      2: AI 不得修改算法数值、添加算法未产生的交易信号或补全缺失行情。
+
+  RISK_AND_PAPER_TRADING:
+    requirements:
+      1: 第一版只能进行模拟交易，不得连接真实券商、真实账户或自动提交订单。
+      2: 默认单笔模拟交易风险不得超过净值的 1%。
+      3: 止损必须结合 ATR 和结构位计算，最低风险收益比必须达到 1:2，否则不得进入 enter 状态。
+      4: 模拟订单只能由用户基于分析结果主动创建或确认，不得由 AI 自动提交。
+
+  VALIDATION:
+    requirements:
+      1: 第一版必须提供基础历史回测，用于验证策略信号、手续费、滑点、信号延迟和指标暖机边界。
+      2: 回测和实时分析都必须避免使用未来数据。
+      3: 第一版必须支持保存分析快照，快照能够复现当时的行情时间、指标输入、策略状态和 AI 解释输入。
+
+constraints:
+  DATA_BOUNDARY:
+    description: 公共行情可以在本地研究版由浏览器直连，密钥、AI provider、用户数据、真实交易和多用户共享缓存必须经过后端代理。
+    requirements:
+      1: 前端不得保存或传输任何交易所 API secret 或 AI provider secret。
+      2: 行情 adapter 必须支持注入 REST 和 WebSocket base URL，不能把浏览器直连实现扩散到业务层。
+  SCOPE:
+    description: 首版定位为个人研究工具，不承诺预测收益或提供投资建议。
+    requirements:
+      1: 首版不支持永续合约、杠杆、资金费率、持仓量、强平分析、真实订单或自动交易。
+      2: 首版不把截图识别作为主要分析路径。
+      3: 系统必须将分析结果展示为研究和模拟交易信息，而不是确定性收益承诺。
