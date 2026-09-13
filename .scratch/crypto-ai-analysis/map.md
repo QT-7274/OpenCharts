@@ -14,8 +14,8 @@
 
 - 已确定产品目的地：个人研究工具，第一阶段只做模拟交易。
 - 已确定市场：加密货币现货；首批沿用 BTC、ETH、SOL、BNB、XRP、ADA。
-- [01-market-data-realtime-contract](issues/01-market-data-realtime-contract.md)：Binance Spot public REST + WebSocket 作为第一版行情源，统一 UTC 毫秒 K 线模型，并由 adapter 负责闭合判定、重连、去重和缺口回填。
-- 已确定分析时点：实时接收行情，但在手动触发或 `1h` K 线收盘后生成分析。
+- [实时行情接入契约](issues/01-market-data-realtime-contract.md)：Binance Spot public REST + WebSocket 作为第一版行情源，统一 UTC 毫秒 K 线模型，并由 adapter 负责闭合判定、重连、去重和缺口回填。
+- [分析触发与 K 线质量规则](issues/02-analysis-trigger-and-candle-quality.md)：保留手动与 `1h` 闭合自动触发，按 analysis-time 对齐三个周期；缺口或异常无法修复时固定降级为“暂不入场”。
 - 已确定分析周期：`1d + 4h + 1h` 多周期波段分析。
 - 已确定责任边界：程序计算指标、评分、价位和风险参数；AI 解释，不修改基础数值。
 - 已确定策略方向：多周期趋势 + 回调确认。
@@ -25,7 +25,6 @@
 
 ## Not yet specified
 
-- 现货价格与成交量的数据质量、时区、K 线闭合判定和缺失数据处理。
 - “趋势 + 回调确认”各指标的具体参数、评分权重、冲突规则和信号失效条件。
 - 入场区间、支撑阻力、止损止盈和置信度的可复现计算定义。
 - AI 模型适配层、提示词输入、结构化响应 schema、失败降级和成本限制。
