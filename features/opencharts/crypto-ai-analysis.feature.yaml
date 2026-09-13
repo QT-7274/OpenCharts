@@ -82,6 +82,27 @@ components:
     requirements:
       1: AI 只能基于算法生成的指标、状态、价位和风险参数生成自然语言解释。
       2: AI 不得修改算法数值、添加算法未产生的交易信号或补全缺失行情。
+      3: 前端必须只调用项目后端的 AI explanation endpoint，AI provider secret 只能存在于后端环境变量中。
+      3-1: 后端必须通过可替换的 AiExplanationProvider 调用模型，第一版使用 OpenAI Responses API，但模型 ID 必须可配置并写入快照。
+      4: AI 输入只能包含 symbol、analysisTimeMs、trigger、strategyVersion、三个周期的数据时间、指标结果、评分细目、策略状态与原因、支撑阻力、入场与风险计划以及数据质量状态。
+      4-1: AI 输入不得包含整段原始 K 线历史，模型不得使用联网搜索、工具调用或其他行情源补充分析。
+      5: AI 必须通过 strict Structured Outputs 返回 summary、trendExplanation、indicatorEvidence、entryExplanation、riskExplanation、cautionNotes 和 educationalNotes，schema 必须拒绝额外字段并限制文本长度和数组条数。
+      5-1: AI 输出只能包含解释性文字，策略状态、评分、置信度、支撑阻力、入场区间、止损止盈和风险收益比必须直接使用算法结果展示。
+      6: 后端必须校验 AI 输出中的价格、百分比和评分；出现输入中不存在或与算法结果不一致的数字时，整份 AI 解释必须标记为 invalid，不能部分展示。
+      6-1: 界面必须区分“策略计算”和“AI 解释”，不能将 AI 文字显示为算法事实。
+      7: 算法状态不是 enter 时，AI 只能解释等待或回避原因，不得提供替代入场价、建议绕过硬条件或暗示激进入场。
+      8: AI 请求超时、网络失败、模型拒答、响应不完整、schema 校验失败或数字校验失败时最多重试一次，整个操作总超时为 15 秒。
+      8-1: AI 失败时必须保留并展示算法结果，AI 区域显示“AI 解释暂不可用”，不得复用旧解释冒充本次输出，也不得改变策略状态。
+      9: 相同 symbol、analysisTimeMs、strategyVersion 和 promptVersion 的分析默认只能产生一次 AI 调用，重复手动分析必须复用已保存解释。
+      9-1: 只有用户明确执行“重新生成解释”时才能再次调用；自动 AI 调用每日软上限默认 50 次，达到上限后停止自动解释但继续算法分析。
+      9-2: 单次 AI 调用的 max_output_tokens 默认不超过 1000。
+
+  ANALYSIS_SNAPSHOT:
+    requirements:
+      1: 每次分析必须保存算法输入摘要、算法结果、strategyVersion、promptVersion、schemaVersion、AI provider、完整 model ID、请求与响应时间、token usage、AI 原始结构化响应、校验结果和失败原因。
+      1-1: 快照不得保存 AI provider secret、交易所 secret 或其他认证凭据。
+      2: OpenAI 请求必须设置 store 为 false，本地分析快照默认长期保留，直到用户主动删除。
+      3: 每份展示的 AI 解释必须能够追溯到同一快照中的算法结果、输入摘要和模型元数据。
 
   RISK_AND_PAPER_TRADING:
     requirements:
