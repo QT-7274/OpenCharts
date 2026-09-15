@@ -1,8 +1,8 @@
 import type { Symbol } from "../schemas.ts";
 
 /**
- * Demo instruments. These mirror the crypto pairs whose real historical OHLC
- * is bundled under ./data (see scripts/fetch-demo-data.mjs). Quoted in USD.
+ * Demo instruments use the same USDT symbols as the Binance market-data adapter.
+ * Demo history maps these names to the bundled USD files at its boundary.
  */
 function crypto(name: string, displayName: string, tickSize: number): Symbol {
   return {
@@ -25,12 +25,12 @@ function crypto(name: string, displayName: string, tickSize: number): Symbol {
 }
 
 export const DEMO_SYMBOLS: Symbol[] = [
-  crypto("BTCUSD", "Bitcoin", 0.01),
-  crypto("ETHUSD", "Ethereum", 0.01),
-  crypto("SOLUSD", "Solana", 0.01),
-  crypto("BNBUSD", "BNB", 0.01),
-  crypto("XRPUSD", "XRP", 0.0001),
-  crypto("ADAUSD", "Cardano", 0.0001),
+  crypto("BTCUSDT", "Bitcoin / Tether", 0.01),
+  crypto("ETHUSDT", "Ethereum / Tether", 0.01),
+  crypto("SOLUSDT", "Solana / Tether", 0.01),
+  crypto("BNBUSDT", "BNB / Tether", 0.01),
+  crypto("XRPUSDT", "XRP / Tether", 0.0001),
+  crypto("ADAUSDT", "Cardano / Tether", 0.0001),
 ];
 
 export const DEMO_SYMBOL_NAMES = DEMO_SYMBOLS.map((s) => s.name);

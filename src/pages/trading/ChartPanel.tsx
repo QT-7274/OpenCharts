@@ -54,6 +54,7 @@ import {
 } from "./constants.ts";
 import { ChartContextMenu } from "./ChartContextMenu.tsx";
 import { ChartSettingsDialog } from "./ChartSettingsDialog.tsx";
+import { buildChartSeriesData } from "./chart-data.ts";
 import {
   DrawingContextMenu,
   DrawingFloatingToolbar,
@@ -1290,7 +1291,7 @@ export function ChartPanel({
     () => (historicalExtra.length === 0 ? candles : [...historicalExtra, ...candles]),
     [historicalExtra, candles],
   );
-  const { chartData, volumeData } = useChartData(allCandles, colors);
+  const { chartData, volumeData, indicatorData } = useChartData(allCandles, colors);
 
   const {
     newsConfig,
@@ -1389,7 +1390,7 @@ export function ChartPanel({
     [onAddDrawing, pipDigits, timeframe, selectedSymbol],
   );
 
-  useIndicators(chartRef, candleSeriesRef, chartData, activeIndicators, isDark);
+  useIndicators(chartRef, candleSeriesRef, indicatorData, activeIndicators, isDark);
 
   // ── Replay trade event markers ─────────────────────────────
   useEffect(() => {
@@ -2077,61 +2078,9 @@ export function ChartPanel({
   );
 }
 
-// ── Local helper: Build chart data (candles + volume) ────────
-
-type CandleRow = CandlestickData<Time> & { volume: number };
-
-// Treat values below 1e12 as seconds, at/above as milliseconds.
-function secOrMsToMs(v: number): number {
-  return v < 1_000_000_000_000 ? v * 1000 : v;
-}
-
-// Normalise a raw candle's timestamp (seconds, ms, or ISO string) to unix seconds.
-function candleTimeSec(c: Candle): number {
-  let tMs = NaN;
-  if (typeof c.time === "number" && c.time > 0) tMs = secOrMsToMs(c.time);
-  else if (typeof c.timestamp === "number" && c.timestamp > 0) tMs = secOrMsToMs(c.timestamp);
-  else if (typeof c.timestamp === "string") tMs = Date.parse(c.timestamp);
-  return Number.isNaN(tMs) ? NaN : Math.floor(tMs / 1000);
-}
-
-function toCandleRow(c: Candle): CandleRow {
-  return {
-    time: candleTimeSec(c) as Time,
-    open: Number(c.open),
-    high: Number(c.high),
-    low: Number(c.low),
-    close: Number(c.close),
-    volume: Number(c.volume) || 0,
-  };
-}
-
-// Keep the last row for each timestamp (input must be time-sorted ascending).
-function dedupeByTime(sorted: CandleRow[]): CandleRow[] {
-  const out: CandleRow[] = [];
-  for (let i = 0; i < sorted.length; i++) {
-    const cur = sorted[i]!;
-    const next = sorted[i + 1];
-    if (!next || (cur.time as number) !== (next.time as number)) out.push(cur);
-  }
-  return out;
-}
-
 function useChartData(candles: Candle[], colors: { volumeUp: string; volumeDown: string }) {
-  return useMemo(() => {
-    const sorted = candles
-      .map(toCandleRow)
-      .filter((c) => !Number.isNaN(c.time as number) && (c.time as number) > 0)
-      .sort((a, b) => (a.time as number) - (b.time as number));
-    const deduped = dedupeByTime(sorted);
-
-    const chartData: CandlestickData<Time>[] = deduped.map(({ volume: _v, ...rest }) => rest);
-    const volumeData: HistogramData<Time>[] = deduped.map((c) => ({
-      time: c.time,
-      value: c.volume,
-      color: c.close >= c.open ? colors.volumeUp : colors.volumeDown,
-    }));
-
-    return { chartData, volumeData };
-  }, [candles, colors.volumeUp, colors.volumeDown]);
+  return useMemo(
+    () => buildChartSeriesData(candles, colors),
+    [candles, colors.volumeUp, colors.volumeDown],
+  );
 }

@@ -99,7 +99,7 @@ export function TradingPage() {
   // Chart timeframe persistence (#8)
   const [timeframe, setTimeframe] = useState<Timeframe>(() => {
     const saved = localStorage.getItem(`tf_${selectedSymbol}`);
-    return saved && TIMEFRAMES.includes(saved as Timeframe) ? (saved as Timeframe) : "15m";
+    return saved && (TIMEFRAMES as readonly string[]).includes(saved) ? (saved as Timeframe) : "1h";
   });
   const handleTimeframeChange = useCallback(
     (tf: Timeframe) => {
@@ -111,7 +111,7 @@ export function TradingPage() {
   // Restore timeframe when symbol changes
   useEffect(() => {
     const saved = localStorage.getItem(`tf_${selectedSymbol}`);
-    if (saved && TIMEFRAMES.includes(saved as Timeframe)) setTimeframe(saved as Timeframe);
+    if (saved && (TIMEFRAMES as readonly string[]).includes(saved)) setTimeframe(saved as Timeframe);
   }, [selectedSymbol]);
 
   const [activeIndicators, setActiveIndicators] = useState<IndicatorType[]>([]);

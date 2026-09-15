@@ -329,7 +329,7 @@ export const useTradingStore = create<TradingState>((set, get) => ({
   positions: [],
   orders: [],
   symbols: [],
-  selectedSymbol: "BTCUSD",
+  selectedSymbol: "BTCUSDT",
   ticks: {},
   liveTicks: {},
   liveCandleUpdates: {},

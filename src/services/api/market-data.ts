@@ -31,6 +31,7 @@ export interface MarketDataCandle {
   low: number;
   close: number;
   volume: number;
+  isClosed?: boolean;
 }
 
 export interface MarketDataCandleMetadata {

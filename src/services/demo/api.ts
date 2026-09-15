@@ -1,5 +1,6 @@
 import type { DrawingLine } from "../../pages/trading/constants.ts";
 import type { Candle } from "../schemas.ts";
+import { browserMarketDataApi, marketDataMode } from "../market-data/runtime.ts";
 import { getHistory } from "./candles.ts";
 import * as engine from "./engine.ts";
 import { DEMO_SYMBOLS } from "./instruments.ts";
@@ -128,16 +129,42 @@ export const demoApi = {
   },
 
   // ── Symbols & market data ──
-  getSymbols: () => Promise.resolve(DEMO_SYMBOLS),
-  getCandles: (symbol: string, timeframe: string, limit?: number) =>
-    Promise.resolve(getHistory(symbol, timeframe, limit)),
-  getCandlesWithMeta: (symbol: string, timeframe: string, limit?: number) =>
-    Promise.resolve(candlesMeta(getHistory(symbol, timeframe, limit))),
+  getSymbols: () =>
+    marketDataMode === "binance"
+      ? browserMarketDataApi.getSymbols()
+      : Promise.resolve(DEMO_SYMBOLS),
+  getCandles: (
+    symbol: string,
+    timeframe: string,
+    limit?: number,
+    range?: { fromMs: number; toMs: number },
+  ) =>
+    marketDataMode === "binance"
+      ? browserMarketDataApi.getCandles(symbol, timeframe, limit, range)
+      : Promise.resolve(getHistory(symbol, timeframe, limit)),
+  getCandlesWithMeta: (
+    symbol: string,
+    timeframe: string,
+    limit?: number,
+    range?: { fromMs: number; toMs: number },
+  ) =>
+    marketDataMode === "binance"
+      ? browserMarketDataApi.getCandlesWithMeta(symbol, timeframe, limit, range)
+      : Promise.resolve(candlesMeta(getHistory(symbol, timeframe, limit))),
   getTick: (symbol: string) => {
+    if (marketDataMode === "binance") {
+      return browserMarketDataApi.getTick(symbol).then((tick) => {
+        engine.mark(symbol, (tick.bid + tick.ask) / 2);
+        return tick;
+      });
+    }
     const price = engine.getLastPrice(symbol);
     return Promise.resolve({ symbol, bid: price, ask: price, timestamp: Date.now() });
   },
-  getMarketDataHealth: () => Promise.resolve({ status: "ok" }),
+  getMarketDataHealth: () =>
+    marketDataMode === "binance"
+      ? browserMarketDataApi.getMarketDataHealth()
+      : Promise.resolve({ status: "ok" }),
   getEconomicCalendar: () => Promise.resolve([]),
 
   // ── Trading (paper engine) ──

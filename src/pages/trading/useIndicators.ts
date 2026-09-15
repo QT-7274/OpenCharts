@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { IChartApi, ISeriesApi, CandlestickData, Time } from "lightweight-charts";
+import type { IChartApi, ISeriesApi, Time } from "lightweight-charts";
 import { LineStyle } from "lightweight-charts";
 import {
   sma,
@@ -11,15 +11,15 @@ import {
   stochastic,
   vwap,
   INDICATOR_REGISTRY,
+  type CandleData,
   type IndicatorType,
 } from "../../lib/indicators.ts";
-import { toIndicatorCandles } from "./utils.ts";
 import { CHART_COLORS } from "./constants.ts";
 
 export function useIndicators(
   chartRef: React.RefObject<IChartApi | null>,
   candleSeriesRef: React.RefObject<ISeriesApi<"Candlestick"> | null>,
-  chartData: CandlestickData<Time>[],
+  indicatorCandles: CandleData[],
   activeIndicators: IndicatorType[],
   isDark: boolean,
 ): void {
@@ -29,10 +29,9 @@ export function useIndicators(
   const colors = isDark ? CHART_COLORS.dark : CHART_COLORS.light;
 
   useEffect(() => {
-    if (!chartRef.current || !candleSeriesRef.current || chartData.length === 0) return;
+    if (!chartRef.current || !candleSeriesRef.current || indicatorCandles.length === 0) return;
 
     const chart = chartRef.current;
-    const indCandles = toIndicatorCandles(chartData);
 
     // Remove old indicator series
     for (const [_key, series] of indicatorSeriesRef.current) {
@@ -50,7 +49,7 @@ export function useIndicators(
 
       switch (type) {
         case "SMA": {
-          const data = sma(indCandles, config.defaultParams.period!);
+          const data = sma(indicatorCandles, config.defaultParams.period!);
           const s = chart.addLineSeries({
             color: config.color,
             lineWidth: 1,
@@ -61,7 +60,7 @@ export function useIndicators(
           break;
         }
         case "EMA": {
-          const data = ema(indCandles, config.defaultParams.period!);
+          const data = ema(indicatorCandles, config.defaultParams.period!);
           const s = chart.addLineSeries({
             color: config.color,
             lineWidth: 1,
@@ -72,7 +71,7 @@ export function useIndicators(
           break;
         }
         case "RSI": {
-          const data = rsi(indCandles, config.defaultParams.period);
+          const data = rsi(indicatorCandles, config.defaultParams.period);
           const s = chart.addLineSeries({ color: config.color, lineWidth: 1, priceScaleId: "rsi" });
           s.setData(data.map((p) => ({ time: p.time as Time, value: p.value })));
           indicatorSeriesRef.current.set("RSI", s);
@@ -96,7 +95,7 @@ export function useIndicators(
         }
         case "MACD": {
           const data = macd(
-            indCandles,
+            indicatorCandles,
             config.defaultParams.fast,
             config.defaultParams.slow,
             config.defaultParams.signal,
@@ -128,7 +127,7 @@ export function useIndicators(
         }
         case "BOLL": {
           const data = bollingerBands(
-            indCandles,
+            indicatorCandles,
             config.defaultParams.period,
             config.defaultParams.stdDev,
           );
@@ -156,7 +155,7 @@ export function useIndicators(
           break;
         }
         case "ATR": {
-          const data = atr(indCandles, config.defaultParams.period);
+          const data = atr(indicatorCandles, config.defaultParams.period);
           const s = chart.addLineSeries({ color: config.color, lineWidth: 1, priceScaleId: "atr" });
           s.setData(data.map((p) => ({ time: p.time as Time, value: p.value })));
           indicatorSeriesRef.current.set("ATR", s);
@@ -164,7 +163,7 @@ export function useIndicators(
         }
         case "STOCH": {
           const data = stochastic(
-            indCandles,
+            indicatorCandles,
             config.defaultParams.kPeriod,
             config.defaultParams.dPeriod,
           );
@@ -185,7 +184,7 @@ export function useIndicators(
           break;
         }
         case "VWAP": {
-          const data = vwap(indCandles);
+          const data = vwap(indicatorCandles);
           const s = chart.addLineSeries({
             color: config.color,
             lineWidth: 2,
@@ -200,5 +199,5 @@ export function useIndicators(
     }
     // chartRef/candleSeriesRef are stable refs; colors derived from isDark dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeIndicators, chartData, isDark]);
+  }, [activeIndicators, indicatorCandles, isDark]);
 }

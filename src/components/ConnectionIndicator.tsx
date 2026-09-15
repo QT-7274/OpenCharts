@@ -49,6 +49,7 @@ export function useStaleData(): boolean {
 
     // Explicit provider interruption from backend should always surface.
     if (health.adapter?.status === "unavailable") return true;
+    if (health.adapter?.status === "degraded") return true;
 
     // No ticks observed since process start.
     if (typeof health.lastTickAgeMs === "number" && health.lastTickAgeMs < 0) return true;
@@ -135,6 +136,12 @@ export function StaleDataBanner() {
         return interruptionReason
           ? `Live Feed Outage — ${interruptionReason}. Historical charts may still render from stored candles.`
           : "Live Feed Outage — live market data is unavailable. Historical charts may still render from stored candles.";
+      }
+
+      if (health.adapter?.status === "degraded") {
+        return interruptionReason
+          ? `Live Feed Degraded — ${interruptionReason}. Formal analysis is blocked for affected series.`
+          : "Live Feed Degraded — closed-candle recovery is incomplete. Formal analysis is blocked for affected series.";
       }
 
       if (typeof health.lastTickAgeMs === "number" && health.lastTickAgeMs < 0) {

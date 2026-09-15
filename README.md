@@ -2,7 +2,7 @@
 
 # 📈 OpenCharts
 
-**An open-source trading terminal that runs entirely in your browser — no backend, no signup, no API keys.**
+**An open-source trading terminal with live Binance Spot market data and an in-browser paper-trading engine.**
 
 Advanced charting · full drawing-tool suite · watchlist · depth-of-market · order panel · built-in paper-trading engine, seeded with **real** market history.
 
@@ -19,6 +19,7 @@ Advanced charting · full drawing-tool suite · watchlist · depth-of-market · 
 - [Quick start](#quick-start)
 - [How it works](#how-it-works)
 - [Project structure](#project-structure)
+- [Market data configuration](#market-data-configuration)
 - [Refreshing the bundled market data](#refreshing-the-bundled-market-data)
 - [Bring your own data / backend](#bring-your-own-data--backend)
 - [Adding instruments](#adding-instruments)
@@ -38,10 +39,9 @@ and you land straight in a live-feeling terminal: a candlestick chart with a ful
 drawing toolbar, a watchlist, a depth-of-market ladder, and an order ticket — all
 wired to an **in-browser paper-trading engine**.
 
-There is **no server to run**. The demo session is seeded with *genuine* historical
-OHLC data (pulled from a public exchange API, never synthetically generated) and a
-tick stream is replayed forward from the present, so the chart and prices move like
-a real feed while you place and manage paper trades.
+There is **no application backend to run**. By default the browser loads public
+Binance Spot candles over REST and follows live kline updates over WebSocket. The
+paper account and order engine remain local to the browser.
 
 It's ideal as:
 
@@ -54,7 +54,7 @@ It's ideal as:
 
 ### 📊 Charting
 - Candlestick chart powered by [`lightweight-charts`](https://github.com/tradingview/lightweight-charts).
-- Timeframes from **1m → 1w** (1m, 5m, 15m, 30m, 1h, 4h, 1d, 1w).
+- Binance Spot analysis timeframes: **1h, 4h, and 1d**.
 - Volume histogram, OHLC legend, live bid/ask price lines, crosshair, and countdown.
 - Session highlighting and session-break separators.
 - Per-symbol chart preferences and saveable **chart templates** (persisted locally).
@@ -81,22 +81,29 @@ It's ideal as:
 - Account equity, balance, used/free margin update in real time.
 
 ### 🛰️ Real market data, no backend
-- Demo OHLC is **real** historical data bundled at build time (no random walks).
-- A replay feed streams ticks forward from "now" so the terminal feels live.
-- Everything runs client-side — deploy it as a static site.
+- Historical candles come from Binance Spot public REST endpoints.
+- Live candle updates come from Binance Spot public WebSocket streams.
+- BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT, and ADAUSDT are supported initially.
+- No Binance account or API key is required.
+- An explicit offline demo mode can replay bundled historical data.
 
 ## Quick start
 
-> Requires **Node 20+**.
+> Requires **Node 22**.
 
 ```bash
+nvm use 22
 npm install
 npm run dev
 ```
 
 Open the printed local URL (e.g. `http://localhost:5173`). The app boots straight
-into a demo session with a funded paper-trading account — pick a symbol from the
+into a session with a funded local paper-trading account — pick a symbol from the
 watchlist, set a size in the order panel, and go long or short.
+
+No `.env` file is required for the default Binance public feed. To customize the
+provider URLs or use offline demo data, copy `.env.example` to `.env.local` and
+change the documented values.
 
 To build for production:
 
@@ -107,10 +114,9 @@ npm run preview    # serve the production build locally
 
 ## How it works
 
-OpenCharts keeps the entire UI **backend-agnostic**. The terminal talks to two
-service modules — a REST-shaped `api` and a streaming `wsClient` — and never cares
-where the data comes from. In this repo, both are implemented by a small in-browser
-**demo layer**:
+OpenCharts keeps the UI **backend-agnostic**. The terminal talks to a REST-shaped
+`api` and a streaming `wsClient`; the live Binance adapter is isolated behind those
+interfaces while paper trading stays in the local demo engine:
 
 ```
                 ┌─────────────────────────────────────────────┐
@@ -124,28 +130,44 @@ where the data comes from. In this repo, both are implemented by a small in-brow
                 └───────────────┬───────┘ └──────┬───────────────┘
                                 │                 │
                 ┌───────────────▼─────────────────▼───────────────┐
-                │                services/demo/                    │
-                │  engine.ts   paper-trading (positions, P&L, SL/TP)│
-                │  feed.ts     replays real ticks → bus → store     │
-                │  candles.ts  serves bundled OHLC (shifted to now) │
-                │  instruments.ts / data/  real OHLC + symbol specs │
+                │ services/market-data/       │ services/demo/      │
+                │ Binance REST + WebSocket    │ paper-trading engine│
                 └──────────────────────────────────────────────────┘
 ```
 
 - **`services/demo/engine.ts`** — the paper-trading engine and single source of
   truth for the account, positions, and orders. It marks positions to market and
   publishes the same position/order/equity events the UI already consumed.
-- **`services/demo/feed.ts`** — replays the bundled real 1-minute closes for every
-  symbol as a forward-moving tick stream at wall-clock time.
+- **`services/market-data/`** — normalizes Binance REST arrays and WebSocket events,
+  deduplicates candles, detects gaps, reconnects, and runs REST tail recovery.
+- **`services/demo/feed.ts`** — used only when `VITE_MARKET_DATA_MODE=demo`.
 - **`services/demo/candles.ts`** — serves the bundled history, time-shifted so the
   most recent bar aligns to "now" (values stay real; only the timeline is
   normalized so it looks live).
-- **`services/api.ts` / `services/ws.ts`** — thin shims that expose the exact REST
-  + pub/sub contracts the components use, backed by the demo layer. Swapping these
-  two files is all it takes to point OpenCharts at a real backend.
+- **`services/api.ts` / `services/ws.ts`** — stable REST + pub/sub contracts used by
+  the UI. Public market data can later move behind a proxy without changing charts.
 
 Because the data layer sits behind a stable interface, **no UI component had to
 change** to run without a server.
+
+## Market data configuration
+
+The defaults use Binance's public market-data-only endpoints:
+
+```dotenv
+VITE_MARKET_DATA_MODE=binance
+VITE_BINANCE_REST_BASE_URL=https://data-api.binance.vision/api/v3
+VITE_BINANCE_WS_BASE_URL=wss://data-stream.binance.vision
+```
+
+These endpoints require no credentials. Do not add Binance secrets to a Vite
+environment variable because every `VITE_*` value is included in browser code.
+
+To run without network access:
+
+```dotenv
+VITE_MARKET_DATA_MODE=demo
+```
 
 ## Project structure
 

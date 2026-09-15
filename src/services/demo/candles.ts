@@ -30,7 +30,8 @@ const TF_SECONDS: Record<string, number> = {
 };
 
 function rawSeries(symbol: string, timeframe: string): Candle[] {
-  return series.get(`${symbol}_${timeframe}`) ?? [];
+  const bundledSymbol = symbol.endsWith("USDT") ? `${symbol.slice(0, -4)}USD` : symbol;
+  return series.get(`${bundledSymbol}_${timeframe}`) ?? [];
 }
 
 /** Start of the current period (seconds) for a timeframe. */

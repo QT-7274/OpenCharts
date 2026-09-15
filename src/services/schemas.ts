@@ -178,6 +178,7 @@ export const CandleSchema = z.object({
   close: z.number(),
   volume: z.number(),
   timestamp: z.union([z.number(), z.string()]).optional(),
+  isClosed: z.boolean().optional(),
 });
 export type Candle = z.infer<typeof CandleSchema>;
 

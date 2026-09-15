@@ -1,7 +1,8 @@
 // ── Trading Page Constants ────────────────────────────────────────────────────
 
-export const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"] as const;
-export type Timeframe = (typeof TIMEFRAMES)[number];
+const ALL_TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"] as const;
+export type Timeframe = (typeof ALL_TIMEFRAMES)[number];
+export const TIMEFRAMES = ["1h", "4h", "1d"] as const satisfies readonly Timeframe[];
 
 /**
  * Master switch for session replay (HUD + scrubber). Disabled on the live
