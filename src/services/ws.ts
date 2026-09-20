@@ -1,6 +1,7 @@
 import { publish, subscribeChannel, type ChannelHandler } from "./demo/bus.ts";
 import { mark } from "./demo/engine.ts";
 import { startDemoFeed, stopDemoFeed } from "./demo/feed.ts";
+import { analysisPipeline } from "./analysis/runtime.ts";
 import { binanceKlineStream, marketDataMode } from "./market-data/runtime.ts";
 import {
   SUPPORTED_SPOT_INTERVALS,
@@ -56,6 +57,11 @@ class MarketDataWsClient {
         timeframe: candle.interval,
         candle,
       });
+      if (candle.interval === "1h") {
+        void analysisPipeline.onHourlyClose(candle).catch((error: unknown) => {
+          console.error("Analysis attempt failed", error);
+        });
+      }
     });
 
     binanceKlineStream.onHealthChange((health) => {

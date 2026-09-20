@@ -35,6 +35,7 @@ import type { Order, PlaceOrderInput, Position, Symbol } from "../services/schem
 import { useTradingStore } from "../services/store.tsx";
 import { toast } from "../services/toast.ts";
 import { AiTraderPanel } from "./AiTraderPage.tsx";
+import { AnalysisReadiness } from "./trading/AnalysisReadiness.tsx";
 import { BottomPanel } from "./trading/BottomPanel.tsx";
 import { ChartPanel } from "./trading/ChartPanel.tsx";
 import { ChartToolbar } from "./trading/ChartToolbar.tsx";
@@ -457,6 +458,7 @@ export function TradingPage() {
       />
 
       <MarketClosedBanner symbolInfo={symbolInfo} />
+      <AnalysisReadiness symbol={selectedSymbol} />
 
       {/* ── Main Layout ──────────────────────────────────── */}
       <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
