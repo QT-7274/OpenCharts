@@ -52,8 +52,13 @@ export function AnalysisReadiness({ symbol }: { symbol: string }) {
       {attempt ? (
         <>
           <span className={attempt.status === "ready" ? "text-emerald-500" : "text-amber-500"}>
-            {attempt.status === "ready" ? "Data ready; signal not implemented" : "Insufficient data · No entry"}
+            {attempt.status === "ready"
+              ? attempt.trend?.eligibleForPullback
+                ? "Bullish trend qualified; awaiting pullback confirmation"
+                : "Trend not qualified · No entry"
+              : "Insufficient data · No entry"}
           </span>
+          <span>{attempt.strategyVersion}</span>
           <span>{attempt.trigger === "manual" ? "Manual" : "1h close"} · as of {formatTime(attempt.analysisTimeMs)}</span>
           {INTERVALS.map((interval) => (
             <span key={interval}>{interval} {formatTime(attempt.candleCloseTimes[interval])}</span>

@@ -1,6 +1,14 @@
 import { SUPPORTED_SPOT_INTERVALS, intervalToMs, isSpotSymbol, type MarketCandle,
   type MarketDataHealth, type MarketDataRestAdapter, type SpotInterval, type SpotSymbol } from "../market-data/types.ts";
 import { inspectWindow, type AnalysisIssue } from "./quality.ts";
+import {
+  TREND_PULLBACK_V1,
+  buildIndicatorSnapshot,
+  evaluateTrendGate,
+  type AnalysisIndicatorSet,
+  type StrategyVersion,
+  type TrendGateResult,
+} from "./strategy.ts";
 
 export type AnalysisTrigger = "manual" | "hourly-close";
 export type AnalysisStatus = "ready" | "insufficient-data";
@@ -15,6 +23,9 @@ export interface AnalysisAttempt {
   candleCloseTimes: Record<SpotInterval, number | null>;
   windows: Record<SpotInterval, MarketCandle[]>;
   issues: AnalysisIssue[];
+  strategyVersion: StrategyVersion;
+  indicators: AnalysisIndicatorSet | null;
+  trend: TrendGateResult | null;
   signal: null;
   entryPlan: null;
 }
@@ -37,7 +48,9 @@ function emptyAttempt(symbol: SpotSymbol, trigger: AnalysisTrigger, time: number
     symbol, trigger, analysisTimeMs: time, status: "insufficient-data", decision: "暂不入场",
     reason: "数据不足或多周期数据不同步",
     candleCloseTimes: { "1d": null, "4h": null, "1h": null },
-    windows: { "1d": [], "4h": [], "1h": [] }, issues: [], signal: null, entryPlan: null,
+    windows: { "1d": [], "4h": [], "1h": [] }, issues: [],
+    strategyVersion: TREND_PULLBACK_V1.version, indicators: null, trend: null,
+    signal: null, entryPlan: null,
   };
 }
 
@@ -57,6 +70,11 @@ function repairPoints(issues: readonly AnalysisIssue[], earliest: number, latest
 
 // crypto-ai-analysis.CANDLE_QUALITY.1 crypto-ai-analysis.CANDLE_QUALITY.1-1 crypto-ai-analysis.CANDLE_QUALITY.3-2
 export function createAnalysisPipeline({ restAdapter, getHealth, minimumCandles = DEFAULT_MINIMUM_CANDLES, storage }: AnalysisPipelineOptions) {
+  const requiredCandles: Record<SpotInterval, number> = {
+    "1d": Math.max(DEFAULT_MINIMUM_CANDLES["1d"], minimumCandles["1d"]),
+    "4h": Math.max(DEFAULT_MINIMUM_CANDLES["4h"], minimumCandles["4h"]),
+    "1h": Math.max(DEFAULT_MINIMUM_CANDLES["1h"], minimumCandles["1h"]),
+  };
   const closedAttempts = new Map<string, Promise<AnalysisAttempt>>();
   const listeners = new Set<(attempt: AnalysisAttempt) => void>();
   const history: AnalysisAttempt[] = [];
@@ -90,8 +108,8 @@ export function createAnalysisPipeline({ restAdapter, getHealth, minimumCandles 
     await Promise.all(SUPPORTED_SPOT_INTERVALS.map(async (interval) => {
       const ms = intervalToMs(interval);
       const latestOpen = Math.floor((time + 1) / ms) * ms - ms;
-      const earliestOpen = latestOpen - (minimumCandles[interval] - 1) * ms;
-      const request = { symbol, interval, endTimeMs: time, limit: minimumCandles[interval] + 2 };
+      const earliestOpen = latestOpen - (requiredCandles[interval] - 1) * ms;
+      const request = { symbol, interval, endTimeMs: time, limit: requiredCandles[interval] + 2 };
       let rows: MarketCandle[];
       try {
         rows = await restAdapter.getCandles(request);
@@ -101,7 +119,7 @@ export function createAnalysisPipeline({ restAdapter, getHealth, minimumCandles 
       }
 
       rows = rows.filter((row) => row.openTimeMs >= earliestOpen - 2 * ms && row.openTimeMs <= latestOpen);
-      let inspected = inspectWindow(symbol, interval, time, rows, minimumCandles[interval]);
+      let inspected = inspectWindow(symbol, interval, time, rows, requiredCandles[interval]);
       const healthRanges = health.missingRanges.filter((range) =>
         range.symbol === symbol && range.interval === interval && range.toMs >= earliestOpen && range.fromMs <= latestOpen);
       const points = new Set(repairPoints(inspected.issues, earliestOpen, latestOpen));
@@ -110,10 +128,10 @@ export function createAnalysisPipeline({ restAdapter, getHealth, minimumCandles 
         try {
           const backfill = await restAdapter.getCandles({
             symbol, interval, startTimeMs: earliestOpen, endTimeMs: latestOpen + ms - 1,
-            limit: minimumCandles[interval],
+            limit: requiredCandles[interval],
           });
           rows = rows.concat(backfill.filter((row) => row.openTimeMs >= earliestOpen && row.openTimeMs <= latestOpen));
-          inspected = inspectWindow(symbol, interval, time, rows, minimumCandles[interval]);
+          inspected = inspectWindow(symbol, interval, time, rows, requiredCandles[interval]);
           for (const at of repairPoints(inspected.issues, earliestOpen, latestOpen)) points.add(at);
         } catch {
           repairFailed = true;
@@ -141,7 +159,7 @@ export function createAnalysisPipeline({ restAdapter, getHealth, minimumCandles 
           repairFailed = true;
         }
       }
-      inspected = inspectWindow(symbol, interval, time, rows, minimumCandles[interval]);
+      inspected = inspectWindow(symbol, interval, time, rows, requiredCandles[interval]);
       result.windows[interval] = inspected.candles;
       result.candleCloseTimes[interval] = inspected.latestCloseTimeMs;
       result.issues.push(...inspected.issues);
@@ -152,8 +170,18 @@ export function createAnalysisPipeline({ restAdapter, getHealth, minimumCandles 
       }
     }));
     if (result.issues.length === 0) {
-      result.status = "ready";
-      result.reason = null;
+      const daily = buildIndicatorSnapshot("1d", result.windows["1d"]);
+      const fourHour = buildIndicatorSnapshot("4h", result.windows["4h"]);
+      const hourly = buildIndicatorSnapshot("1h", result.windows["1h"]);
+      if (!daily) result.issues.push({ interval: "1d", code: "warmup" });
+      if (!fourHour) result.issues.push({ interval: "4h", code: "warmup" });
+      if (!hourly) result.issues.push({ interval: "1h", code: "warmup" });
+      if (daily && fourHour && hourly) {
+        result.indicators = { "1d": daily, "4h": fourHour, "1h": hourly };
+        result.trend = evaluateTrendGate(result.indicators);
+        result.status = "ready";
+        result.reason = null;
+      }
     }
     return record(result);
   }
