@@ -11,6 +11,13 @@ function formatTime(value: number | null): string {
   return value == null ? "—" : new Date(value).toISOString().replace("T", " ").slice(0, 16) + " UTC";
 }
 
+const STRATEGY_STATE_LABELS = {
+  watch: "WATCH · 等待回调",
+  setup: "SETUP · 等待 1h 确认",
+  enter: "ENTER · 条件满足",
+  avoid: "AVOID · 暂不入场",
+} as const;
+
 export function AnalysisReadiness({ symbol }: { symbol: string }) {
   const [attempt, setAttempt] = useState<AnalysisAttempt | null>(
     () => isSpotSymbol(symbol) ? analysisPipeline.getLatest(symbol) : null,
@@ -53,11 +60,12 @@ export function AnalysisReadiness({ symbol }: { symbol: string }) {
         <>
           <span className={attempt.status === "ready" ? "text-emerald-500" : "text-amber-500"}>
             {attempt.status === "ready"
-              ? attempt.trend?.eligibleForPullback
-                ? "Bullish trend qualified; awaiting pullback confirmation"
-                : "Trend not qualified · No entry"
+              ? attempt.strategy
+                ? `${STRATEGY_STATE_LABELS[attempt.strategy.state]} · ${attempt.strategy.score}/100`
+                : "Analysis ready · No entry"
               : "Insufficient data · No entry"}
           </span>
+          {attempt.strategy?.avoidReason && <span>reason: {attempt.strategy.avoidReason}</span>}
           <span>{attempt.strategyVersion}</span>
           <span>{attempt.trigger === "manual" ? "Manual" : "1h close"} · as of {formatTime(attempt.analysisTimeMs)}</span>
           {INTERVALS.map((interval) => (

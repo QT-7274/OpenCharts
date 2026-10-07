@@ -53,6 +53,8 @@ describe("analysis trigger and as-of pipeline", () => {
     expect(result.indicators?.["4h"]).toEqual(expect.objectContaining({ interval: "4h", close: 164 }));
     expect(result.indicators?.["1h"]).toEqual(expect.objectContaining({ interval: "1h", close: 149 }));
     expect(result.trend).toEqual(expect.objectContaining({ direction: "bullish", eligibleForPullback: true }));
+    expect(result.strategy).toEqual(expect.objectContaining({ state: "watch", avoidReason: null }));
+    expect(result.strategy?.score).toBeGreaterThanOrEqual(0);
     expect(result.signal).toBeNull();
     expect(result.entryPlan).toBeNull();
   });

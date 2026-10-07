@@ -1,5 +1,5 @@
 import { atr, ema, macd, rsi, type CandleData, type IndicatorPoint } from "../../lib/indicators.ts";
-import type { MarketCandle, SpotInterval } from "../market-data/types.ts";
+import { intervalToMs, type MarketCandle, type SpotInterval } from "../market-data/types.ts";
 
 export const TREND_PULLBACK_V1 = Object.freeze({
   version: "trend-pullback-v1",
@@ -63,6 +63,72 @@ export interface TrendGateResult {
   fourHour: TimeframeTrendAssessment;
 }
 
+export type StrategyState = "watch" | "setup" | "enter" | "avoid";
+
+export type StrategyAvoidReason =
+  | "data-incomplete"
+  | "trend-not-qualified"
+  | "pullback-invalidated"
+  | "confirmation-score-insufficient"
+  | "risk-reward-insufficient";
+
+export interface PullbackAssessment {
+  enteredZone: boolean;
+  heldInvalidation: boolean;
+  latestCloseAtOrAboveEma20: boolean;
+  valid: boolean;
+  touchIndex: number | null;
+  barsSinceTouch: number | null;
+  zoneLower: number | null;
+  zoneUpper: number | null;
+  invalidationLine: number | null;
+  lowestLow: number | null;
+}
+
+export interface HourlyConfirmation {
+  ema20Reclaim: boolean;
+  breakoutAbovePriorThreeHigh: boolean;
+  priceTrigger: boolean;
+  bothPriceTriggers: boolean;
+  bullishCandle: boolean;
+  rsiAtLeast50: boolean;
+  rsiRising: boolean;
+  passed: boolean;
+  priorThreeHigh: number | null;
+}
+
+export interface EvidenceScoreBreakdown {
+  trendQuality: number;
+  pullbackQuality: number;
+  priceConfirmation: number;
+  momentum: number;
+  volume: number;
+  volatilityAndFreshness: number;
+  total: number;
+}
+
+export interface StrategyEvaluation {
+  state: StrategyState;
+  avoidReason: StrategyAvoidReason | null;
+  score: number;
+  scoreBreakdown: EvidenceScoreBreakdown;
+  dataTimely: boolean;
+  volatilityQualified: boolean;
+  pullback: PullbackAssessment;
+  confirmation: HourlyConfirmation;
+  riskReward: number | null;
+}
+
+export interface StrategyEvaluationInput {
+  indicators: AnalysisIndicatorSet;
+  trend: TrendGateResult;
+  fourHourCandles: readonly MarketCandle[];
+  oneHourCandles: readonly MarketCandle[];
+  analysisTimeMs: number;
+  dataComplete?: boolean;
+  riskReward?: number | null;
+}
+
 function assertClosedSeries(interval: SpotInterval, candles: readonly MarketCandle[]): void {
   for (let index = 0; index < candles.length; index += 1) {
     const row = candles[index]!;
@@ -88,6 +154,10 @@ function toIndicatorCandles(candles: readonly MarketCandle[]): CandleData[] {
 
 function latestValue(points: readonly IndicatorPoint[]): number | null {
   return points.at(-1)?.value ?? null;
+}
+
+function valueAtTime(points: readonly IndicatorPoint[], time: number): number | null {
+  return points.find((point) => point.time === time)?.value ?? null;
 }
 
 function valueAtCandleOffset(
@@ -199,5 +269,183 @@ export function evaluateTrendGate(indicators: AnalysisIndicatorSet): TrendGateRe
     eligibleForPullback,
     daily: dailyTrend,
     fourHour: fourHourTrend,
+  };
+}
+
+// crypto-ai-analysis.STRATEGY.5 crypto-ai-analysis.STRATEGY.5-1 crypto-ai-analysis.STRATEGY.5-2
+export function evaluatePullback(
+  candles: readonly MarketCandle[],
+  latest: IntervalIndicatorSnapshot,
+): PullbackAssessment {
+  assertClosedSeries("4h", candles);
+  const input = toIndicatorCandles(candles);
+  const ema20Points = ema(input, TREND_PULLBACK_V1.emaPeriods.fast);
+  const ema50Points = ema(input, TREND_PULLBACK_V1.emaPeriods.medium);
+  const atrPoints = atr(input, TREND_PULLBACK_V1.atrPeriod);
+  const firstIndex = Math.max(0, candles.length - 6);
+  let touchIndex: number | null = null;
+  let zoneLower: number | null = null;
+  let zoneUpper: number | null = null;
+
+  for (let index = firstIndex; index < candles.length; index += 1) {
+    const candle = candles[index]!;
+    const ema20 = valueAtTime(ema20Points, candle.openTimeMs);
+    const ema50 = valueAtTime(ema50Points, candle.openTimeMs);
+    const atr14 = valueAtTime(atrPoints, candle.openTimeMs);
+    if (ema20 == null || ema50 == null || atr14 == null) continue;
+    const lower = Math.min(ema20, ema50) - 0.25 * atr14;
+    const upper = Math.max(ema20, ema50) + 0.25 * atr14;
+    if (candle.low <= upper && candle.high >= lower && touchIndex == null) {
+      touchIndex = index;
+      zoneLower = lower;
+      zoneUpper = upper;
+    }
+  }
+
+  let heldInvalidation = touchIndex != null;
+  let invalidationLine: number | null = null;
+  let lowestLow: number | null = null;
+  if (touchIndex != null) {
+    for (let index = touchIndex; index < candles.length; index += 1) {
+      const candle = candles[index]!;
+      const ema50 = valueAtTime(ema50Points, candle.openTimeMs);
+      const atr14 = valueAtTime(atrPoints, candle.openTimeMs);
+      if (ema50 == null || atr14 == null) continue;
+      invalidationLine = ema50 - 0.5 * atr14;
+      if (candle.low < invalidationLine) heldInvalidation = false;
+      lowestLow = lowestLow == null ? candle.low : Math.min(lowestLow, candle.low);
+    }
+  }
+
+  const enteredZone = touchIndex != null;
+  const latestCloseAtOrAboveEma20 = latest.close >= latest.ema20;
+  return {
+    enteredZone,
+    heldInvalidation,
+    latestCloseAtOrAboveEma20,
+    valid: enteredZone && heldInvalidation,
+    touchIndex,
+    barsSinceTouch: touchIndex == null ? null : candles.length - 1 - touchIndex,
+    zoneLower,
+    zoneUpper,
+    invalidationLine,
+    lowestLow,
+  };
+}
+
+// crypto-ai-analysis.STRATEGY.6 crypto-ai-analysis.STRATEGY.7
+export function evaluateHourlyConfirmation(
+  candles: readonly MarketCandle[],
+  latest: IntervalIndicatorSnapshot,
+): HourlyConfirmation {
+  assertClosedSeries("1h", candles);
+  const input = toIndicatorCandles(candles);
+  const ema20Points = ema(input, TREND_PULLBACK_V1.emaPeriods.fast);
+  const previous = candles.at(-2);
+  const priorThree = candles.slice(-4, -1);
+  const previousEma20 = previous == null ? null : valueAtTime(ema20Points, previous.openTimeMs);
+  const priorThreeHigh = priorThree.length === 3
+    ? Math.max(...priorThree.map((candle) => candle.high))
+    : null;
+  const ema20Reclaim = previous != null && previousEma20 != null &&
+    previous.close <= previousEma20 && latest.close > latest.ema20;
+  const breakoutAbovePriorThreeHigh = priorThreeHigh != null && latest.close > priorThreeHigh;
+  const priceTrigger = ema20Reclaim || breakoutAbovePriorThreeHigh;
+  const bothPriceTriggers = ema20Reclaim && breakoutAbovePriorThreeHigh;
+  const bullishCandle = latest.close > latest.open;
+  const rsiAtLeast50 = latest.rsi14 >= 50;
+  const rsiRising = latest.rsi14 > latest.previousRsi14;
+  return {
+    ema20Reclaim,
+    breakoutAbovePriorThreeHigh,
+    priceTrigger,
+    bothPriceTriggers,
+    bullishCandle,
+    rsiAtLeast50,
+    rsiRising,
+    passed: priceTrigger && bullishCandle && rsiAtLeast50 && rsiRising,
+    priorThreeHigh,
+  };
+}
+
+function isDataTimely(indicators: AnalysisIndicatorSet, analysisTimeMs: number): boolean {
+  return (Object.keys(indicators) as SpotInterval[]).every((interval) => {
+    const closeTime = indicators[interval].candleCloseTimeMs;
+    const age = analysisTimeMs - closeTime;
+    return age >= 0 && age <= intervalToMs(interval);
+  });
+}
+
+// crypto-ai-analysis.STRATEGY.8 crypto-ai-analysis.STRATEGY.9 crypto-ai-analysis.STRATEGY.13
+// crypto-ai-analysis.STRATEGY.14 crypto-ai-analysis.STRATEGY.15 crypto-ai-analysis.STRATEGY.16
+// crypto-ai-analysis.STRATEGY.17 crypto-ai-analysis.STRATEGY.18
+export function evaluateStrategy(input: StrategyEvaluationInput): StrategyEvaluation {
+  const { indicators, trend } = input;
+  const fourHourPullback = evaluatePullback(input.fourHourCandles, indicators["4h"]);
+  const hourlyConfirmation = evaluateHourlyConfirmation(input.oneHourCandles, indicators["1h"]);
+  const dataTimely = isDataTimely(indicators, input.analysisTimeMs);
+  const volatilityQualified = indicators["1h"].close > 0 &&
+    indicators["1h"].atr14 / indicators["1h"].close >= 0.003 &&
+    indicators["1h"].atr14 / indicators["1h"].close <= 0.03;
+  const trendQuality = [...trend.daily.conditions, ...trend.fourHour.conditions]
+    .filter((conditionItem) => conditionItem.passed).length * 5;
+  const pullbackQuality = (fourHourPullback.enteredZone ? 8 : 0) +
+    (fourHourPullback.heldInvalidation ? 6 : 0) +
+    (fourHourPullback.latestCloseAtOrAboveEma20 ? 6 : 0);
+  const priceConfirmation = (hourlyConfirmation.priceTrigger ? 10 : 0) +
+    (hourlyConfirmation.bullishCandle ? 5 : 0) +
+    (hourlyConfirmation.bothPriceTriggers ? 5 : 0);
+  const momentum = (indicators["1h"].rsi14 >= 50 ? 5 : 0) +
+    (indicators["1h"].rsi14 > indicators["1h"].previousRsi14 ? 5 : 0) +
+    (indicators["1h"].macdHistogram > indicators["1h"].previousMacdHistogram ? 5 : 0);
+  const volume = indicators["1h"].volume > indicators["1h"].volumeSma20 ? 10 : 0;
+  const volatilityAndFreshness = (dataTimely ? 3 : 0) + (volatilityQualified ? 2 : 0);
+  const scoreBreakdown: EvidenceScoreBreakdown = {
+    trendQuality,
+    pullbackQuality,
+    priceConfirmation,
+    momentum,
+    volume,
+    volatilityAndFreshness,
+    total: trendQuality + pullbackQuality + priceConfirmation + momentum + volume + volatilityAndFreshness,
+  };
+  const dataComplete = input.dataComplete ?? true;
+  const riskReward = input.riskReward ?? null;
+
+  let state: StrategyState;
+  let avoidReason: StrategyAvoidReason | null = null;
+  if (!dataComplete || !dataTimely) {
+    state = "avoid";
+    avoidReason = "data-incomplete";
+  } else if (!trend.eligibleForPullback) {
+    state = "avoid";
+    avoidReason = "trend-not-qualified";
+  } else if (fourHourPullback.enteredZone && !fourHourPullback.heldInvalidation) {
+    state = "avoid";
+    avoidReason = "pullback-invalidated";
+  } else if (!fourHourPullback.enteredZone) {
+    state = "watch";
+  } else if (!hourlyConfirmation.passed) {
+    state = "setup";
+  } else if (scoreBreakdown.total < 70) {
+    state = "avoid";
+    avoidReason = "confirmation-score-insufficient";
+  } else if (riskReward == null || riskReward < 2) {
+    state = "avoid";
+    avoidReason = "risk-reward-insufficient";
+  } else {
+    state = "enter";
+  }
+
+  return {
+    state,
+    avoidReason,
+    score: scoreBreakdown.total,
+    scoreBreakdown,
+    dataTimely,
+    volatilityQualified,
+    pullback: fourHourPullback,
+    confirmation: hourlyConfirmation,
+    riskReward,
   };
 }

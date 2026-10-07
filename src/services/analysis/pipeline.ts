@@ -4,8 +4,10 @@ import { inspectWindow, type AnalysisIssue } from "./quality.ts";
 import {
   TREND_PULLBACK_V1,
   buildIndicatorSnapshot,
+  evaluateStrategy,
   evaluateTrendGate,
   type AnalysisIndicatorSet,
+  type StrategyEvaluation,
   type StrategyVersion,
   type TrendGateResult,
 } from "./strategy.ts";
@@ -26,6 +28,7 @@ export interface AnalysisAttempt {
   strategyVersion: StrategyVersion;
   indicators: AnalysisIndicatorSet | null;
   trend: TrendGateResult | null;
+  strategy: StrategyEvaluation | null;
   signal: null;
   entryPlan: null;
 }
@@ -49,7 +52,7 @@ function emptyAttempt(symbol: SpotSymbol, trigger: AnalysisTrigger, time: number
     reason: "数据不足或多周期数据不同步",
     candleCloseTimes: { "1d": null, "4h": null, "1h": null },
     windows: { "1d": [], "4h": [], "1h": [] }, issues: [],
-    strategyVersion: TREND_PULLBACK_V1.version, indicators: null, trend: null,
+    strategyVersion: TREND_PULLBACK_V1.version, indicators: null, trend: null, strategy: null,
     signal: null, entryPlan: null,
   };
 }
@@ -179,6 +182,15 @@ export function createAnalysisPipeline({ restAdapter, getHealth, minimumCandles 
       if (daily && fourHour && hourly) {
         result.indicators = { "1d": daily, "4h": fourHour, "1h": hourly };
         result.trend = evaluateTrendGate(result.indicators);
+        result.strategy = evaluateStrategy({
+          indicators: result.indicators,
+          trend: result.trend,
+          fourHourCandles: result.windows["4h"],
+          oneHourCandles: result.windows["1h"],
+          analysisTimeMs: time,
+          dataComplete: true,
+          riskReward: null,
+        });
         result.status = "ready";
         result.reason = null;
       }
