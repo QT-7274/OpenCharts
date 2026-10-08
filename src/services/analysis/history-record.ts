@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { SUPPORTED_SPOT_INTERVALS, SUPPORTED_SPOT_SYMBOLS } from "../market-data/types.ts";
+import { aiExplanationRecordSchema, aiExplanationSnapshotSchema } from "./ai-explanation-contract.ts";
 import type { AnalysisAttemptRecord } from "./pipeline.ts";
 
 const finite = z.number().finite();
@@ -177,6 +178,9 @@ const strategySchema = z.object({
 });
 
 const analysisAttemptRecordSchema = z.object({
+  snapshotId: z.string().min(1).max(240).optional(),
+  aiInputSummary: aiExplanationSnapshotSchema.nullable().optional(),
+  aiExplanation: aiExplanationRecordSchema.nullable().optional(),
   symbol: z.enum(SUPPORTED_SPOT_SYMBOLS),
   trigger: z.enum(["manual", "hourly-close"]),
   analysisTimeMs: nullableFinite,

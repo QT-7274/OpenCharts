@@ -1,6 +1,7 @@
-import { RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { RefreshCw, WandSparkles } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { analysisPipeline } from "../../services/analysis/runtime.ts";
+import { requestAiExplanation } from "../../services/analysis/ai-explanation-client.ts";
 import { marketDataMode } from "../../services/market-data/runtime.ts";
 import { isSpotSymbol, type SpotInterval } from "../../services/market-data/types.ts";
 import type { AnalysisAttempt } from "../../services/analysis/pipeline.ts";
@@ -68,6 +69,8 @@ export function AnalysisReadiness({ symbol }: { symbol: string }) {
     () => isSpotSymbol(symbol) ? analysisPipeline.getLatest(symbol) : null,
   );
   const [pending, setPending] = useState(false);
+  const [aiPendingSnapshotId, setAiPendingSnapshotId] = useState<string | null>(null);
+  const automaticRequestSnapshot = useRef<string | null>(null);
 
   useEffect(() => {
     setAttempt(isSpotSymbol(symbol) ? analysisPipeline.getLatest(symbol) : null);
@@ -76,6 +79,20 @@ export function AnalysisReadiness({ symbol }: { symbol: string }) {
     });
     return () => { unsubscribe(); };
   }, [symbol]);
+
+  useEffect(() => {
+    if (!attempt?.snapshotId || !attempt.aiInputSummary || attempt.aiExplanation) return;
+    const snapshotId = attempt.snapshotId;
+    if (automaticRequestSnapshot.current === snapshotId) return;
+    automaticRequestSnapshot.current = snapshotId;
+    setAiPendingSnapshotId(snapshotId);
+    void requestAiExplanation(snapshotId, attempt).then((aiExplanation) => {
+      const updated = analysisPipeline.updateAiSnapshot(snapshotId, { aiExplanation });
+      setAttempt((current) => current?.snapshotId === snapshotId ? updated ?? { ...current, aiExplanation } : current);
+    }).finally(() => {
+      setAiPendingSnapshotId((current) => current === snapshotId ? null : current);
+    });
+  }, [attempt?.snapshotId, attempt?.aiInputSummary, attempt?.aiExplanation]);
 
   if (marketDataMode !== "binance" || !isSpotSymbol(symbol)) return null;
 
@@ -96,6 +113,16 @@ export function AnalysisReadiness({ symbol }: { symbol: string }) {
     }
   }
 
+  async function regenerateExplanation() {
+    if (!attempt?.snapshotId) return;
+    const snapshotId = attempt.snapshotId;
+    setAiPendingSnapshotId(snapshotId);
+    const aiExplanation = await requestAiExplanation(snapshotId, attempt, { regenerate: true });
+    const updated = analysisPipeline.updateAiSnapshot(snapshotId, { aiExplanation });
+    setAttempt((current) => current?.snapshotId === snapshotId ? updated ?? { ...current, aiExplanation } : current);
+    setAiPendingSnapshotId((current) => current === snapshotId ? null : current);
+  }
+
   return (
     <div className="space-y-1.5 border-b border-border bg-secondary/30 px-3 py-2 text-xs text-muted-foreground" aria-live="polite">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
@@ -111,6 +138,7 @@ export function AnalysisReadiness({ symbol }: { symbol: string }) {
         </button>
         {attempt ? (
           <>
+            <span className="font-medium text-foreground">策略计算</span>
             <span className={attempt.status === "ready" ? "text-emerald-500" : "text-amber-500"}>
               {attempt.status === "ready"
                 ? attempt.strategy
@@ -179,6 +207,45 @@ export function AnalysisReadiness({ symbol }: { symbol: string }) {
         <div className="border-t border-border/60 pt-1.5">
           <span>失效条件：多周期趋势或回调结构失效、1h 收盘低于回调低点、3 根 1h K 线未触发</span>
         </div>
+      )}
+      {attempt?.persistenceError && (
+        <p role="status" className="border-t border-border/60 pt-1.5 text-amber-600">
+          本次分析或 AI 解释未能保存到本地，刷新后可能丢失。
+        </p>
+      )}
+      {attempt && (
+        <section className="border-t border-border/60 pt-1.5" aria-label="AI 解释">
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+            <span className="font-medium text-foreground">AI 解释</span>
+            <button
+              type="button"
+              onClick={() => void regenerateExplanation()}
+              disabled={!attempt.snapshotId || aiPendingSnapshotId === attempt.snapshotId}
+              title="Regenerate the explanation for this analysis snapshot"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded border border-border bg-background px-2 py-1 text-foreground hover:bg-secondary disabled:opacity-50"
+            >
+              <WandSparkles size={14} aria-hidden="true" />
+              重新生成解释
+            </button>
+          </div>
+          {aiPendingSnapshotId === attempt.snapshotId ? (
+            <p>AI 正在生成解释</p>
+          ) : attempt.aiExplanation?.status === "available" && attempt.aiExplanation.explanation ? (
+            <div className="space-y-1.5">
+              <p className="text-foreground">{attempt.aiExplanation.explanation.summary}</p>
+              <p>{attempt.aiExplanation.explanation.trendExplanation}</p>
+              <ul className="list-inside list-disc">
+                {attempt.aiExplanation.explanation.indicatorEvidence.map((item, index) => <li key={index}>{item}</li>)}
+              </ul>
+              <p>{attempt.aiExplanation.explanation.entryExplanation}</p>
+              <p>{attempt.aiExplanation.explanation.riskExplanation}</p>
+              {attempt.aiExplanation.explanation.cautionNotes.map((item, index) => <p key={`caution-${index}`}>{item}</p>)}
+              {attempt.aiExplanation.explanation.educationalNotes.map((item, index) => <p key={`education-${index}`}>{item}</p>)}
+            </div>
+          ) : (
+            <p>AI 解释暂不可用</p>
+          )}
+        </section>
       )}
     </div>
   );

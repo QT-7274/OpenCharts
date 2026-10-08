@@ -3,6 +3,13 @@ import { SUPPORTED_SPOT_INTERVALS, intervalToMs, isSpotSymbol, type MarketCandle
 import { inspectWindow, type AnalysisIssue } from "./quality.ts";
 import { parseAnalysisAttemptRecord } from "./history-record.ts";
 import {
+  aiExplanationSnapshotSchema,
+  buildAiExplanationSnapshot,
+  type AiExplanationRecord,
+  type AiExplanationSnapshot,
+} from "./ai-explanation-contract.ts";
+import { validateAiExplanationNumbers } from "./ai-explanation-validation.mjs";
+import {
   TREND_PULLBACK_V1,
   buildEntryPlan,
   buildIndicatorSnapshot,
@@ -47,6 +54,10 @@ export interface AnalysisAttempt {
   signal: null;
   entryPlan: EntryPlan | null;
   entryPlanFailure: EntryPlanFailure | null;
+  snapshotId?: string;
+  aiInputSummary?: AiExplanationSnapshot | null;
+  aiExplanation?: AiExplanationRecord | null;
+  persistenceError?: "analysis-snapshot" | "ai-explanation";
 }
 
 export interface AnalysisPipelineOptions {
@@ -58,8 +69,9 @@ export interface AnalysisPipelineOptions {
   now?: () => number;
 }
 
-export type AnalysisAttemptRecord = Omit<AnalysisAttempt, "windows" | "signal">;
+export type AnalysisAttemptRecord = Omit<AnalysisAttempt, "windows" | "signal" | "persistenceError">;
 const HISTORY_KEY = "opencharts.analysis.attempts.v1";
+const IN_MEMORY_HISTORY_LIMIT = 100;
 
 // EMA200 on 1d, 4h structure, and 1h momentum require independent warmup windows.
 export const DEFAULT_MINIMUM_CANDLES: Record<SpotInterval, number> = { "1d": 210, "4h": 65, "1h": 50 };
@@ -88,7 +100,35 @@ function normalizeStoredRecord(value: unknown): AnalysisAttemptRecord | null {
   if (analysisTimeMs !== null && (typeof analysisTimeMs !== "number" || !Number.isFinite(analysisTimeMs))) return null;
   const defaults = emptyAttempt(record.symbol, record.trigger, analysisTimeMs);
   const { windows: _windows, signal: _signal, ...defaultRecord } = defaults;
-  return parseAnalysisAttemptRecord({ ...defaultRecord, ...record });
+  const parsed = parseAnalysisAttemptRecord({ ...defaultRecord, ...record });
+  if (!parsed) return null;
+  const withSnapshot = parsed as AnalysisAttemptRecord & AnalysisAttempt;
+  const expectedSnapshot = buildAiExplanationSnapshot(withSnapshot);
+  const storedSnapshot = parsed.aiInputSummary ?? expectedSnapshot;
+  const storedSnapshotIsConsistent = aiExplanationSnapshotSchema.safeParse(storedSnapshot).success &&
+    JSON.stringify(storedSnapshot) === JSON.stringify(expectedSnapshot);
+  const storedExplanation = parsed.aiExplanation ?? null;
+  const explanationIsConsistent = storedSnapshotIsConsistent &&
+    (storedExplanation?.status !== "available" || (storedExplanation.explanation !== null &&
+      validateAiExplanationNumbers(expectedSnapshot, storedExplanation.explanation)));
+  return {
+    ...parsed,
+    snapshotId: parsed.snapshotId || createSnapshotId(parsed),
+    aiInputSummary: expectedSnapshot,
+    aiExplanation: explanationIsConsistent ? storedExplanation : null,
+  };
+}
+
+let fallbackSnapshotSequence = 0;
+
+function createSnapshotId(
+  attempt: Pick<AnalysisAttempt, "symbol" | "analysisTimeMs" | "strategyVersion" | "trigger">,
+  sequence?: number,
+): string {
+  const timeKey = attempt.analysisTimeMs == null
+    ? `unknown-${sequence ?? fallbackSnapshotSequence++}`
+    : String(attempt.analysisTimeMs);
+  return `${attempt.symbol}:${timeKey}:${attempt.strategyVersion}:${attempt.trigger}`;
 }
 
 function withPlanStatus(
@@ -143,7 +183,6 @@ export function createAnalysisPipeline({ restAdapter, getHealth, getRiskContext,
       records = parsed
         .map(normalizeStoredRecord)
         .filter((record): record is AnalysisAttemptRecord => record !== null)
-        .slice(-100)
         .map((normalized) => {
           const plan = normalized.entryPlan;
           if (plan && Number.isFinite(plan.expiresAtMs) && plan.expiresAtMs <= restoredAtMs &&
@@ -184,7 +223,7 @@ export function createAnalysisPipeline({ restAdapter, getHealth, getRiskContext,
     // Private browsing or malformed prior storage should not prevent analysis.
   }
 
-  history.push(...records.map((record): AnalysisAttempt => ({
+  history.push(...records.slice(-IN_MEMORY_HISTORY_LIMIT).map((record): AnalysisAttempt => ({
     ...record,
     windows: { "1d": [], "4h": [], "1h": [] },
     signal: null,
@@ -208,18 +247,71 @@ export function createAnalysisPipeline({ restAdapter, getHealth, getRiskContext,
   }
 
   function record(attempt: AnalysisAttempt): AnalysisAttempt {
-    history.push(attempt);
-    if (history.length > 100) history.shift();
-    const { windows: _windows, signal: _signal, ...summary } = attempt;
-    records.push(summary);
-    if (records.length > 100) records.shift();
+    const snapshotId = attempt.snapshotId ?? createSnapshotId(attempt);
+    const aiInputSummary = attempt.aiInputSummary ?? buildAiExplanationSnapshot(attempt);
+    const existingRecordIndex = records.findIndex((record) => record.snapshotId === snapshotId);
+    const previous = existingRecordIndex < 0 ? null : records[existingRecordIndex] ?? null;
+    const canReuseExplanation = previous !== null &&
+      JSON.stringify(previous.aiInputSummary) === JSON.stringify(aiInputSummary);
+    const recorded: AnalysisAttempt = {
+      ...attempt,
+      snapshotId,
+      aiInputSummary,
+      aiExplanation: attempt.aiExplanation ?? (canReuseExplanation ? previous.aiExplanation ?? null : null),
+    };
+    const existingHistoryIndex = history.findIndex((entry) => entry.snapshotId === snapshotId);
+    if (existingHistoryIndex >= 0) history.splice(existingHistoryIndex, 1);
+    history.push(recorded);
+    if (history.length > IN_MEMORY_HISTORY_LIMIT) history.shift();
+    const { windows: _windows, signal: _signal, ...summary } = recorded;
+    if (existingRecordIndex >= 0) records[existingRecordIndex] = summary;
+    else records.push(summary);
     try {
       storage?.setItem(HISTORY_KEY, JSON.stringify(records));
     } catch {
-      // Keep this session's record even if browser storage is unavailable.
+      recorded.persistenceError = "analysis-snapshot";
+      history[history.length - 1] = recorded;
     }
-    for (const listener of listeners) listener(attempt);
-    return attempt;
+    for (const listener of listeners) listener(recorded);
+    return recorded;
+  }
+
+  function updateAiSnapshot(snapshotId: string, update: { aiExplanation: AiExplanationRecord | null }): AnalysisAttempt | null {
+    let recordIndex = records.length - 1;
+    while (recordIndex >= 0 && records[recordIndex]?.snapshotId !== snapshotId) recordIndex -= 1;
+    if (recordIndex === -1) return null;
+    const saved = records[recordIndex];
+    if (!saved) return null;
+    let aiExplanation = update.aiExplanation;
+    if (aiExplanation?.status === "available" && aiExplanation.explanation && saved.aiInputSummary &&
+      !validateAiExplanationNumbers(saved.aiInputSummary, aiExplanation.explanation)) {
+      aiExplanation = {
+        ...aiExplanation,
+        status: "invalid",
+        validationResult: "invalid",
+        failureReason: "numeric-validation-failed",
+        explanation: null,
+      };
+    }
+    const updatedRecord = { ...saved, aiExplanation };
+    records[recordIndex] = updatedRecord;
+    let historyIndex = history.length - 1;
+    while (historyIndex >= 0 && history[historyIndex]?.snapshotId !== snapshotId) historyIndex -= 1;
+    const existing = historyIndex === -1 ? null : history[historyIndex];
+    let updated: AnalysisAttempt = existing
+      ? { ...existing, aiExplanation }
+      : { ...updatedRecord, windows: { "1d": [], "4h": [], "1h": [] }, signal: null };
+    const persistableUpdate = { ...updated };
+    delete persistableUpdate.persistenceError;
+    updated = persistableUpdate;
+    try {
+      storage?.setItem(HISTORY_KEY, JSON.stringify(records));
+    } catch {
+      updated = { ...updated, persistenceError: "ai-explanation" };
+    }
+    if (historyIndex !== -1) history[historyIndex] = updated;
+    for (const listener of listeners) listener(updated);
+    return updated;
   }
 
   async function run(symbol: SpotSymbol, trigger: AnalysisTrigger, time: number, event?: MarketCandle): Promise<AnalysisAttempt> {
@@ -450,7 +542,7 @@ export function createAnalysisPipeline({ restAdapter, getHealth, getRiskContext,
   }
 
   return {
-    runManual, onHourlyClose,
+    runManual, onHourlyClose, updateAiSnapshot,
     subscribe(listener: (attempt: AnalysisAttempt) => void) {
       listeners.add(listener);
       return () => listeners.delete(listener);

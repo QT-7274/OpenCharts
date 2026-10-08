@@ -39,9 +39,10 @@ and you land straight in a live-feeling terminal: a candlestick chart with a ful
 drawing toolbar, a watchlist, a depth-of-market ladder, and an order ticket — all
 wired to an **in-browser paper-trading engine**.
 
-There is **no application backend to run**. By default the browser loads public
-Binance Spot candles over REST and follows live kline updates over WebSocket. The
-paper account and order engine remain local to the browser.
+Market data and paper trading do not require an application backend. The browser
+loads public Binance Spot candles over REST and follows live kline updates over
+WebSocket; the paper account and order engine remain local. AI explanations use
+an optional local Node service so the provider key never enters browser code.
 
 It's ideal as:
 
@@ -80,7 +81,7 @@ It's ideal as:
 - Stop-loss / take-profit are evaluated automatically and close positions when hit.
 - Account equity, balance, used/free margin update in real time.
 
-### 🛰️ Real market data, no backend
+### 🛰️ Real market data
 - Historical candles come from Binance Spot public REST endpoints.
 - Live candle updates come from Binance Spot public WebSocket streams.
 - BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT, and ADAUSDT are supported initially.
@@ -94,16 +95,34 @@ It's ideal as:
 ```bash
 nvm use 22
 npm install
+cp .env.example .env
+```
+
+Add your OpenAI key to `OPENAI_API_KEY` in `.env` to enable AI explanations. This
+key is read only by the local backend and must not use a `VITE_` prefix.
+The automatic daily-call counter is stored at `~/.opencharts/ai-usage.json`;
+set `OPENCHARTS_AI_USAGE_PATH` to change that file location.
+
+Start the backend in one terminal:
+
+```bash
+nvm use 22
+npm run dev:server
+```
+
+Start the frontend in a second terminal:
+
+```bash
+nvm use 22
 npm run dev
 ```
 
-Open the printed local URL (e.g. `http://localhost:5173`). The app boots straight
-into a session with a funded local paper-trading account — pick a symbol from the
-watchlist, set a size in the order panel, and go long or short.
+Open the printed local URL (e.g. `http://localhost:5173`). Without an OpenAI key,
+market data and deterministic analysis continue to work; the AI explanation area
+will report that the explanation service is unavailable.
 
-No `.env` file is required for the default Binance public feed. To customize the
-provider URLs or use offline demo data, copy `.env.example` to `.env.local` and
-change the documented values.
+To customize public market-data URLs or use offline demo data, edit the matching
+`VITE_*` values in `.env`. Never put provider secrets in `VITE_*` variables.
 
 To build for production:
 

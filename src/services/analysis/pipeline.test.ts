@@ -333,6 +333,175 @@ describe("analysis trigger and as-of pipeline", () => {
     expect(restored[0]).not.toHaveProperty("windows");
   });
 
+  it("crypto-ai-analysis.ANALYSIS_SNAPSHOT.1 crypto-ai-analysis.ANALYSIS_SNAPSHOT.3 persists the explanation with its algorithm snapshot", async () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    const options = {
+      restAdapter: adapter(), storage,
+      getRiskContext: () => ({ accountEquity: 100_000, availableQuoteBalance: 100_000 }),
+      getHealth: () => ({ state: "live" as const, serverTimeMs: AT, lastMessageAtMs: AT,
+        lastClosedCandleAtMs: AT, missingRanges: [] }),
+    };
+    const pipeline = createAnalysisPipeline(options);
+    const attempt = await pipeline.runManual("BTCUSDT");
+    const explanationRecord = {
+      status: "available" as const,
+      provider: "openai",
+      modelId: "gpt-6-luna-2026-01-01",
+      promptVersion: "crypto-ai-explanation-v1",
+      schemaVersion: "crypto-ai-explanation-v1",
+      requestedAtMs: AT,
+      respondedAtMs: AT + 1,
+      tokenUsage: { inputTokens: 50, outputTokens: 35 },
+      rawResponse: { summary: "趋势条件满足。" },
+      validationResult: "valid" as const,
+      failureReason: null,
+      explanation: {
+        summary: "趋势条件满足。",
+        trendExplanation: "日线和 4 小时趋势偏多。",
+        indicatorEvidence: ["现价高于 EMA20。"],
+        entryExplanation: "仅按算法给定的计划观察。",
+        riskExplanation: "止损和止盈以策略结果为准。",
+        cautionNotes: [],
+        educationalNotes: [],
+      },
+    };
+
+    expect(attempt.snapshotId).toBeTruthy();
+    expect(attempt.aiInputSummary).toMatchObject({ symbol: "BTCUSDT", strategyVersion: "trend-pullback-v1" });
+    expect(attempt.aiInputSummary).not.toHaveProperty("windows");
+    expect(pipeline.updateAiSnapshot(attempt.snapshotId!, { aiExplanation: explanationRecord })).toMatchObject({
+      snapshotId: attempt.snapshotId,
+      aiExplanation: explanationRecord,
+    });
+
+    const restored = createAnalysisPipeline(options).getLatest("BTCUSDT");
+    expect(restored?.snapshotId).toBe(attempt.snapshotId);
+    expect(restored?.aiInputSummary).toEqual(attempt.aiInputSummary);
+    expect(restored?.aiExplanation).toEqual(explanationRecord);
+  });
+
+  it("crypto-ai-analysis.AI_EXPLANATION.9 reuses the explanation and replaces duplicate snapshot IDs", async () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    const pipeline = createAnalysisPipeline({
+      restAdapter: adapter(), storage,
+      getRiskContext: () => ({ accountEquity: 100_000, availableQuoteBalance: 100_000 }),
+      getHealth: () => ({ state: "live", serverTimeMs: AT, lastMessageAtMs: AT,
+        lastClosedCandleAtMs: AT, missingRanges: [] }),
+    });
+    const first = await pipeline.runManual("BTCUSDT");
+    const explanation = {
+      status: "unavailable" as const, provider: "openai", modelId: "gpt-6-luna",
+      promptVersion: "crypto-ai-explanation-v1", schemaVersion: "crypto-ai-explanation-v1",
+      requestedAtMs: AT, respondedAtMs: AT, tokenUsage: null, rawResponse: null,
+      validationResult: "unavailable" as const, failureReason: "provider-not-configured", explanation: null,
+    };
+    pipeline.updateAiSnapshot(first.snapshotId!, { aiExplanation: explanation });
+
+    const second = await pipeline.runManual("BTCUSDT");
+
+    expect(second.snapshotId).toBe(first.snapshotId);
+    expect(second.aiExplanation).toEqual(explanation);
+    expect(pipeline.getRecords()).toHaveLength(1);
+    expect(JSON.parse(values.get("opencharts.analysis.attempts.v1")!)).toHaveLength(1);
+  });
+
+  it("crypto-ai-analysis.AI_EXPLANATION.6-2 does not restore text with numbers inconsistent with its snapshot", async () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    const options = {
+      restAdapter: adapter(), storage,
+      getRiskContext: () => ({ accountEquity: 100_000, availableQuoteBalance: 100_000 }),
+      getHealth: () => ({ state: "live" as const, serverTimeMs: AT, lastMessageAtMs: AT,
+        lastClosedCandleAtMs: AT, missingRanges: [] }),
+    };
+    const pipeline = createAnalysisPipeline(options);
+    const attempt = await pipeline.runManual("BTCUSDT");
+    pipeline.updateAiSnapshot(attempt.snapshotId!, { aiExplanation: {
+      status: "available", provider: "openai", modelId: "gpt-6-luna",
+      promptVersion: "crypto-ai-explanation-v1", schemaVersion: "crypto-ai-explanation-v1",
+      requestedAtMs: AT, respondedAtMs: AT + 1, tokenUsage: null, rawResponse: { summary: "趋势条件尚待确认。" },
+      validationResult: "valid", failureReason: null,
+      explanation: {
+        summary: "当前仍需等待趋势条件确认。", trendExplanation: "趋势条件尚待确认。",
+        indicatorEvidence: ["目前没有额外指标数值。"], entryExplanation: "等待算法确认。",
+        riskExplanation: "暂无有效风险计划。", cautionNotes: [], educationalNotes: [],
+      },
+    } });
+    const stored = JSON.parse(values.get("opencharts.analysis.attempts.v1")!) as Array<Record<string, unknown>>;
+    const savedExplanation = stored[0]!.aiExplanation as Record<string, unknown>;
+    const savedText = savedExplanation.explanation as Record<string, unknown>;
+    stored[0] = {
+      ...stored[0],
+      aiExplanation: {
+        ...savedExplanation,
+        explanation: { ...savedText, summary: "评分为 999。" },
+      },
+    };
+    values.set("opencharts.analysis.attempts.v1", JSON.stringify(stored));
+
+    const restored = createAnalysisPipeline(options).getLatest("BTCUSDT");
+
+    expect(restored?.status).toBe("ready");
+    expect(restored?.aiExplanation).toBeNull();
+  });
+
+  it("crypto-ai-analysis.ANALYSIS_SNAPSHOT.5 reports failed local persistence", async () => {
+    const pipeline = createAnalysisPipeline({
+      restAdapter: adapter(),
+      storage: { getItem: () => null, setItem: () => { throw new Error("quota exceeded"); } },
+      getRiskContext: () => ({ accountEquity: 100_000, availableQuoteBalance: 100_000 }),
+      getHealth: () => ({ state: "live", serverTimeMs: AT, lastMessageAtMs: AT,
+        lastClosedCandleAtMs: AT, missingRanges: [] }),
+    });
+
+    const attempt = await pipeline.runManual("BTCUSDT");
+
+    expect(attempt.persistenceError).toBe("analysis-snapshot");
+  });
+
+  it("crypto-ai-analysis.ANALYSIS_SNAPSHOT.5 clears persistence errors after a successful save", async () => {
+    const values = new Map<string, string>();
+    const setItem = vi.fn((key: string, value: string) => { values.set(key, value); })
+      .mockImplementationOnce(() => { throw new Error("quota exceeded"); })
+      .mockImplementationOnce(() => { throw new Error("quota exceeded"); });
+    const options = {
+      restAdapter: adapter(),
+      storage: { getItem: (key: string) => values.get(key) ?? null, setItem },
+      getRiskContext: () => ({ accountEquity: 100_000, availableQuoteBalance: 100_000 }),
+      getHealth: () => ({ state: "live" as const, serverTimeMs: AT, lastMessageAtMs: AT,
+        lastClosedCandleAtMs: AT, missingRanges: [] }),
+    };
+    const pipeline = createAnalysisPipeline(options);
+    const attempt = await pipeline.runManual("BTCUSDT");
+    const aiExplanation = {
+      status: "unavailable" as const, provider: "openai", modelId: null,
+      promptVersion: "crypto-ai-explanation-v1", schemaVersion: "crypto-ai-explanation-v1",
+      requestedAtMs: AT, respondedAtMs: AT, tokenUsage: null, rawResponse: null,
+      validationResult: "unavailable" as const, failureReason: "provider-not-configured", explanation: null,
+    };
+
+    expect(attempt.persistenceError).toBe("analysis-snapshot");
+    expect(pipeline.updateAiSnapshot(attempt.snapshotId!, { aiExplanation })?.persistenceError)
+      .toBe("ai-explanation");
+
+    const saved = pipeline.updateAiSnapshot(attempt.snapshotId!, { aiExplanation });
+
+    expect(saved?.persistenceError).toBeUndefined();
+    expect(pipeline.getLatest("BTCUSDT")?.persistenceError).toBeUndefined();
+    expect(createAnalysisPipeline(options).getLatest("BTCUSDT")?.aiExplanation).toEqual(aiExplanation);
+  });
+
   it("crypto-ai-analysis.ANALYSIS_SNAPSHOT.4 skips malformed history records independently", async () => {
     const values = new Map<string, string>();
     const storage = {
