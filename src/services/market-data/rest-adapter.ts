@@ -17,7 +17,14 @@ export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promis
 interface BinanceExchangeFilter {
   filterType: string;
   tickSize?: string;
+  minQty?: string;
+  maxQty?: string;
   stepSize?: string;
+}
+
+interface BinanceRecentTrade {
+  price: string;
+  time: number;
 }
 
 interface BinanceExchangeSymbol {
@@ -69,7 +76,7 @@ function retryDelayMs(response: Response, attempt: number): number {
 function readFilterNumber(
   filters: BinanceExchangeFilter[],
   filterType: string,
-  field: "tickSize" | "stepSize",
+  field: "tickSize" | "minQty" | "maxQty" | "stepSize",
 ): number {
   const value = filters.find((filter) => filter.filterType === filterType)?.[field];
   const parsed = Number(value);
@@ -114,7 +121,7 @@ export function createBinanceRestAdapter(
       for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
         let response: Response;
         try {
-          response = await fetchFn(url, { signal: AbortSignal.timeout(timeoutMs) });
+          response = await fetchFn(url, { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
         } catch (error) {
           if (attempt === maxRetries) throw error;
           await sleep(Math.min(30_000, 500 * 2 ** attempt));
@@ -149,6 +156,22 @@ export function createBinanceRestAdapter(
         serverTimeRequest = null;
       });
     return serverTimeRequest;
+  }
+
+  // crypto-ai-analysis.MARKET_DATA.7
+  async function getSpotQuote(symbolInput: string) {
+    const symbol = toSpotSymbol(symbolInput);
+    const params = new URLSearchParams({ symbol });
+    params.set("limit", "1");
+    const trades = await requestJson<BinanceRecentTrade[]>("/trades", params);
+    const [trade] = trades;
+    const price = Number(trade?.price);
+    if (!trade || !Number.isFinite(price) || price <= 0 || !Number.isFinite(trade.time)) {
+      throw new Error("Invalid Binance spot trade response");
+    }
+    const { serverTime } = await requestJson<{ serverTime: number }>("/time");
+    if (!Number.isFinite(serverTime)) throw new Error("Invalid Binance server time");
+    return { price, tradeTimeMs: trade.time, serverTimeMs: serverTime };
   }
 
   async function fetchKlinePage(
@@ -223,11 +246,14 @@ export function createBinanceRestAdapter(
         baseAsset: symbol.baseAsset,
         quoteAsset: symbol.quoteAsset,
         tickSize: readFilterNumber(symbol.filters, "PRICE_FILTER", "tickSize"),
+        // crypto-ai-analysis.RISK_AND_PAPER_TRADING.5-1
+        minQty: readFilterNumber(symbol.filters, "LOT_SIZE", "minQty"),
+        maxQty: readFilterNumber(symbol.filters, "LOT_SIZE", "maxQty"),
         stepSize: readFilterNumber(symbol.filters, "LOT_SIZE", "stepSize"),
       }));
   }
 
-  return { getServerTime, getSpotSymbols, getCandles };
+  return { getServerTime, getSpotSymbols, getSpotQuote, getCandles };
 }
 
 export const binanceRestAdapter = createBinanceRestAdapter();

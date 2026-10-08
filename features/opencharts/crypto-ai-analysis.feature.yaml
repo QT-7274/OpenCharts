@@ -16,6 +16,7 @@ components:
       4: WebSocket adapter 必须支持重连、恢复订阅、连接状态、消息新鲜度和断线后的 REST 尾部回填。
       5: 行情数据必须按 symbol、interval、openTimeMs 去重和 upsert，且闭合 K 线优先于未闭合版本。
       6: 发现缺口时必须优先 REST 回填，不能使用 OHLCV 前值填充、插值或伪造成交量。
+      7: 现价报价必须保存 Binance 最新成交时间和服务端时间，报价年龄超过 30 秒时不得用于生成或更新入场计划。
 
   CANDLE_QUALITY:
     requirements:
@@ -69,6 +70,7 @@ components:
       4-2: 第一版只输出止盈计划，不自动移动止损或执行卖出。
       5: 未成交计划在超过 3 根已闭合 1h K 线、1d 或 4h 多头条件失效、4h 回调结构失效、1h close 跌破回调最低价或行情变为 insufficient-data 时必须取消。
       5-1: 价格高于入场区间上沿本身不取消计划，只禁止追涨并受 3 根 1h K 线有效期约束。
+      6: 刷新页面后必须恢复未过期且未失效的入场计划，过期或已失效计划不得恢复为活动计划。
 
   ANALYSIS_OUTPUT:
     requirements:
@@ -103,6 +105,7 @@ components:
       1-1: 快照不得保存 AI provider secret、交易所 secret 或其他认证凭据。
       2: OpenAI 请求必须设置 store 为 false，本地分析快照默认长期保留，直到用户主动删除。
       3: 每份展示的 AI 解释必须能够追溯到同一快照中的算法结果、输入摘要和模型元数据。
+      4: 恢复本地分析历史时必须逐条校验记录；无效记录不得恢复，且不得阻止其他有效记录恢复。
 
   RISK_AND_PAPER_TRADING:
     requirements:

@@ -7,6 +7,7 @@ describe("browser market-data API", () => {
     const restAdapter: MarketDataRestAdapter = {
       getServerTime: vi.fn().mockResolvedValue(1_710_003_600_000),
       getSpotSymbols: vi.fn().mockResolvedValue([]),
+      getSpotQuote: vi.fn().mockResolvedValue({ price: 100, tradeTimeMs: 0, serverTimeMs: 0 }),
       getCandles: vi.fn().mockResolvedValue([
         {
           symbol: "BTCUSDT",
@@ -91,6 +92,7 @@ describe("browser market-data API", () => {
     const restAdapter: MarketDataRestAdapter = {
       getServerTime: vi.fn().mockResolvedValue(1_710_010_800_000),
       getSpotSymbols: vi.fn().mockResolvedValue([]),
+      getSpotQuote: vi.fn().mockResolvedValue({ price: 100, tradeTimeMs: 0, serverTimeMs: 0 }),
       getCandles: vi.fn().mockResolvedValueOnce([base, third]).mockResolvedValueOnce([second]),
     };
     const api = createBrowserMarketDataApi({
@@ -146,6 +148,7 @@ describe("browser market-data API", () => {
     const restAdapter: MarketDataRestAdapter = {
       getServerTime: vi.fn().mockResolvedValue(1_710_010_800_000),
       getSpotSymbols: vi.fn().mockResolvedValue([]),
+      getSpotQuote: vi.fn().mockResolvedValue({ price: 100, tradeTimeMs: 0, serverTimeMs: 0 }),
       getCandles: vi
         .fn()
         .mockResolvedValueOnce([base, third])

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAnalysisPipeline } from "./pipeline.ts";
+import { evaluateStrategy } from "./strategy.ts";
 import { BASE, MS, candle } from "./fixtures.ts";
 import type { MarketCandle, MarketDataRestAdapter, SpotInterval } from "../market-data/types.ts";
 
@@ -26,7 +27,11 @@ function risingSeries(interval: SpotInterval, count: number): MarketCandle[] {
 function adapter(overrides: Partial<MarketDataRestAdapter> = {}): MarketDataRestAdapter {
   return {
     getServerTime: vi.fn().mockResolvedValue(AT),
-    getSpotSymbols: vi.fn().mockResolvedValue([]),
+    getSpotSymbols: vi.fn().mockResolvedValue([{
+      symbol: "BTCUSDT", status: "TRADING", baseAsset: "BTC", quoteAsset: "USDT",
+      tickSize: 0.01, minQty: 0.001, maxQty: 1_000_000, stepSize: 0.001,
+    }]),
+    getSpotQuote: vi.fn().mockResolvedValue({ price: 149, tradeTimeMs: AT, serverTimeMs: AT }),
     getCandles: vi.fn().mockImplementation(async ({ interval, startTimeMs }: { interval: SpotInterval; startTimeMs?: number }) => {
       const rows = risingSeries(interval, COUNTS[interval]);
       return startTimeMs == null ? rows : rows.filter((row) => row.openTimeMs >= startTimeMs);
@@ -39,12 +44,14 @@ function makePipeline(rest: MarketDataRestAdapter) {
   return createAnalysisPipeline({
     restAdapter: rest,
     getHealth: () => ({ state: "live", serverTimeMs: AT, lastMessageAtMs: AT, lastClosedCandleAtMs: AT, missingRanges: [] }),
+    getRiskContext: () => ({ accountEquity: 100_000, availableQuoteBalance: 100_000 }),
   });
 }
 
 describe("analysis trigger and as-of pipeline", () => {
   it("crypto-ai-analysis.STRATEGY.2 crypto-ai-analysis.STRATEGY.3 crypto-ai-analysis.STRATEGY.4 crypto-ai-analysis.STRATEGY.12 attaches versioned indicators and trend evidence", async () => {
-    const pipeline = makePipeline(adapter());
+    const restAdapter = adapter();
+    const pipeline = makePipeline(restAdapter);
 
     const result = await pipeline.runManual("BTCUSDT");
     expect(result.status).toBe("ready");
@@ -55,6 +62,9 @@ describe("analysis trigger and as-of pipeline", () => {
     expect(result.trend).toEqual(expect.objectContaining({ direction: "bullish", eligibleForPullback: true }));
     expect(result.strategy).toEqual(expect.objectContaining({ state: "watch", avoidReason: null }));
     expect(result.strategy?.score).toBeGreaterThanOrEqual(0);
+    expect(result.currentPrice).toBe(149);
+    expect(restAdapter.getSpotQuote).toHaveBeenCalledWith("BTCUSDT");
+    expect(result.supportResistance).toEqual({ support: null, resistance: null });
     expect(result.signal).toBeNull();
     expect(result.entryPlan).toBeNull();
   });
@@ -65,6 +75,7 @@ describe("analysis trigger and as-of pipeline", () => {
       restAdapter: rest,
       getHealth: () => ({ state: "live", serverTimeMs: AT, lastMessageAtMs: AT,
         lastClosedCandleAtMs: AT, missingRanges: [] }),
+      getRiskContext: () => ({ accountEquity: 100_000, availableQuoteBalance: 100_000 }),
       minimumCandles: { "1d": 2, "4h": 2, "1h": 2 },
     });
 
@@ -72,6 +83,151 @@ describe("analysis trigger and as-of pipeline", () => {
     expect(rest.getCandles).toHaveBeenCalledWith(expect.objectContaining({ interval: "1d", limit: 212 }));
     expect(rest.getCandles).toHaveBeenCalledWith(expect.objectContaining({ interval: "4h", limit: 67 }));
     expect(rest.getCandles).toHaveBeenCalledWith(expect.objectContaining({ interval: "1h", limit: 52 }));
+  });
+
+  it("crypto-ai-analysis.ENTRY_PLAN.2 crypto-ai-analysis.ENTRY_PLAN.2-1 crypto-ai-analysis.ENTRY_PLAN.3-1 crypto-ai-analysis.ENTRY_PLAN.3 crypto-ai-analysis.ENTRY_PLAN.4 crypto-ai-analysis.ENTRY_PLAN.6 crypto-ai-analysis.ANALYSIS_SNAPSHOT.4 builds and restores a valid closed-candle plan", async () => {
+    const byInterval = Object.fromEntries(INTERVALS.map((interval) => [
+      interval,
+      risingSeries(interval, COUNTS[interval]),
+    ])) as Record<SpotInterval, MarketCandle[]>;
+    const fourHourCloses = [149, 147, 148, 150, 152, 154];
+    fourHourCloses.forEach((close, offset) => {
+      const index = byInterval["4h"].length - fourHourCloses.length + offset;
+      byInterval["4h"][index] = {
+        ...byInterval["4h"][index]!,
+        open: close - 1,
+        high: close + 2,
+        low: close - 3,
+        close,
+      };
+    });
+    const resistanceIndex = byInterval["4h"].length - fourHourCloses.length - 1;
+    byInterval["4h"][resistanceIndex] = { ...byInterval["4h"][resistanceIndex]!, high: 175 };
+    [145, 125, 118, 150].forEach((close, offset) => {
+      const index = byInterval["1h"].length - 4 + offset;
+      byInterval["1h"][index] = {
+        ...byInterval["1h"][index]!,
+        open: close - 1,
+        high: close + 2,
+        low: close - 2,
+        close,
+      };
+    });
+
+    const rest = adapter({
+      getServerTime: vi.fn().mockResolvedValue(AT + 1),
+      getSpotQuote: vi.fn().mockResolvedValue({ price: 150, tradeTimeMs: AT - 29_000, serverTimeMs: AT }),
+      getCandles: vi.fn().mockImplementation(async ({ interval, startTimeMs }: {
+        interval: SpotInterval;
+        startTimeMs?: number;
+      }) => startTimeMs == null
+        ? byInterval[interval]
+        : byInterval[interval].filter((row) => row.openTimeMs >= startTimeMs)),
+    });
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    const options = {
+      restAdapter: rest,
+      storage,
+      now: () => AT + MS["1h"],
+      getHealth: () => ({ state: "live" as const, serverTimeMs: AT, lastMessageAtMs: AT,
+        lastClosedCandleAtMs: AT, missingRanges: [] }),
+      getRiskContext: () => ({ accountEquity: 100_000, availableQuoteBalance: 100_000 }),
+    };
+    const pipeline = createAnalysisPipeline(options);
+    const result = await pipeline.runManual("BTCUSDT");
+
+    expect(result.status).toBe("ready");
+    expect(result.supportResistance.resistance?.price).toBe(175);
+    expect(result.entryPlan).toMatchObject({
+      status: "active",
+      referencePrice: 150,
+      entryLower: expect.any(Number),
+      entryUpper: expect.any(Number),
+      stop: expect.any(Number),
+      takeProfit1: expect.any(Number),
+      takeProfit2: 175,
+      riskReward: 2,
+      riskBudgetAmount: 1_000,
+      estimatedStopRisk: expect.any(Number),
+      suggestedQuantity: expect.any(Number),
+    });
+    expect(result.entryPlan?.estimatedStopRisk).toBeLessThanOrEqual(1_000);
+    expect(result.strategy?.state).toBe("enter");
+    const storedRecord = values.get("opencharts.analysis.attempts.v1")!;
+    const storedRecords = JSON.parse(storedRecord) as Array<Record<string, unknown>>;
+    const corruptedPlanRecord = {
+      ...storedRecords[0],
+      entryPlan: { ...result.entryPlan!, stop: result.entryPlan!.referencePrice + 1 },
+    };
+    values.set("opencharts.analysis.attempts.v1", JSON.stringify([...storedRecords, corruptedPlanRecord]));
+    const reloaded = createAnalysisPipeline({ ...options, now: () => AT + 2_000 });
+    expect(reloaded.getRecords()).toHaveLength(1);
+    expect(reloaded.getLatest("BTCUSDT")?.entryPlan).toMatchObject({
+      status: "waiting-for-price",
+      failure: "spot-price-stale",
+    });
+
+    const offline = adapter({
+      getCandles: vi.fn().mockRejectedValue(new Error("offline")),
+    });
+    const afterRefresh = await createAnalysisPipeline({ ...options, restAdapter: offline })
+      .runManual("BTCUSDT");
+    expect(afterRefresh.entryPlan).toMatchObject({ status: "invalidated", failure: "insufficient-data" });
+
+    const invalidatedRecord = {
+      ...storedRecords[0],
+      entryPlan: { ...result.entryPlan!, status: "invalidated", failure: "trend-invalidated" },
+      entryPlanFailure: "trend-invalidated",
+      strategy: {
+        ...result.strategy!, state: "avoid", avoidReason: "trend-not-qualified", entryPlanStatus: "invalidated",
+      },
+    };
+    const invalidatedStorage = {
+      getItem: () => JSON.stringify([invalidatedRecord]),
+      setItem: vi.fn(),
+    };
+    const invalidatedPipeline = createAnalysisPipeline({
+      ...options,
+      restAdapter: { ...rest, getSpotSymbols: vi.fn().mockResolvedValue([]) },
+      storage: invalidatedStorage,
+    });
+    expect(invalidatedPipeline.getLatest("BTCUSDT")?.entryPlan?.status).toBe("invalidated");
+    expect((await invalidatedPipeline.runManual("BTCUSDT")).entryPlan).toBeNull();
+
+    const expiredStorage = {
+      getItem: () => storedRecord,
+      setItem: vi.fn(),
+    };
+    const expiredPipeline = createAnalysisPipeline({
+      ...options,
+      restAdapter: offline,
+      storage: expiredStorage,
+      now: () => AT + 3 * MS["1h"],
+    });
+    expect(expiredPipeline.getLatest("BTCUSDT")?.entryPlan?.status).toBe("expired");
+    const expiredAfterRefresh = await expiredPipeline.runManual("BTCUSDT");
+    expect(expiredAfterRefresh.entryPlan).toBeNull();
+    const insufficientReward = evaluateStrategy({
+      indicators: result.indicators!,
+      trend: result.trend!,
+      fourHourCandles: result.windows["4h"],
+      oneHourCandles: result.windows["1h"],
+      analysisTimeMs: result.analysisTimeMs!,
+      dataComplete: true,
+      riskReward: 1.5,
+      entryPlanStatus: "active",
+    });
+    expect(insufficientReward).toMatchObject({ state: "avoid", avoidReason: "risk-reward-insufficient" });
+
+    vi.mocked(rest.getSpotQuote).mockResolvedValue({ price: 170, tradeTimeMs: AT, serverTimeMs: AT });
+    const auto = await makePipeline(rest).onHourlyClose(byInterval["1h"].at(-1)!);
+    expect(auto?.currentPrice).toBe(170);
+    expect(auto?.entryPlan?.status).toBe("waiting-for-price");
+    expect(auto?.strategy?.state).toBe("setup");
   });
 
   it("crypto-ai-analysis.CANDLE_QUALITY.1 crypto-ai-analysis.CANDLE_QUALITY.3-1 crypto-ai-analysis.CANDLE_QUALITY.3-2 records manual Binance server time and actual close times", async () => {
@@ -98,6 +254,8 @@ describe("analysis trigger and as-of pipeline", () => {
     expect(first).toBe(duplicate);
     expect(first?.trigger).toBe("hourly-close");
     expect(first?.analysisTimeMs).toBe(event.closeTimeMs);
+    expect(first?.currentPrice).toBe(event.close);
+    expect(rest.getSpotQuote).toHaveBeenCalledWith("BTCUSDT");
     expect(await pipeline.onHourlyClose(event)).toBe(first);
     expect(rest.getCandles).toHaveBeenCalledTimes(3);
     expect(await pipeline.onHourlyClose({ ...event, isClosed: false })).toBeNull();
@@ -162,6 +320,7 @@ describe("analysis trigger and as-of pipeline", () => {
     };
     const options = {
       restAdapter: adapter(), storage,
+      getRiskContext: () => ({ accountEquity: 100_000, availableQuoteBalance: 100_000 }),
       getHealth: () => ({ state: "live" as const, serverTimeMs: AT, lastMessageAtMs: AT,
         lastClosedCandleAtMs: AT, missingRanges: [] }),
     };
@@ -172,5 +331,29 @@ describe("analysis trigger and as-of pipeline", () => {
       candleCloseTimes: { "1d": AT, "4h": AT, "1h": AT },
     })]);
     expect(restored[0]).not.toHaveProperty("windows");
+  });
+
+  it("crypto-ai-analysis.ANALYSIS_SNAPSHOT.4 skips malformed history records independently", async () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    const options = {
+      restAdapter: adapter(), storage,
+      getRiskContext: () => ({ accountEquity: 100_000, availableQuoteBalance: 100_000 }),
+      getHealth: () => ({ state: "live" as const, serverTimeMs: AT, lastMessageAtMs: AT,
+        lastClosedCandleAtMs: AT, missingRanges: [] }),
+    };
+    await createAnalysisPipeline(options).runManual("BTCUSDT");
+    const saved = JSON.parse(values.get("opencharts.analysis.attempts.v1")!) as unknown[];
+    values.set("opencharts.analysis.attempts.v1", JSON.stringify([
+      ...saved,
+      { ...saved[0] as object, issues: [{ interval: "1h", code: { invalid: true } }] },
+    ]));
+
+    const restored = createAnalysisPipeline(options);
+    expect(restored.getRecords()).toHaveLength(1);
+    expect(restored.getLatest("BTCUSDT")?.status).toBe("ready");
   });
 });

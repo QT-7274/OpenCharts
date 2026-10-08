@@ -85,6 +85,189 @@ export interface PullbackAssessment {
   lowestLow: number | null;
 }
 
+export interface PriceZone {
+  price: number;
+  lower: number;
+  upper: number;
+  touches: number;
+  lastTouchedAtMs: number;
+}
+
+export interface SupportResistanceLevels {
+  support: PriceZone | null;
+  resistance: PriceZone | null;
+}
+
+export interface SimulatedRiskContext {
+  accountEquity: number | null;
+  availableQuoteBalance: number | null;
+}
+
+export interface SpotQuantityRules {
+  minQty: number;
+  maxQty: number;
+  stepSize: number;
+}
+
+export type EntryPlanStatus = "active" | "waiting-for-price" | "expired" | "invalidated";
+export type EntryPlanFailure =
+  | "invalid-input"
+  | "spot-price-unavailable"
+  | "spot-price-stale"
+  | "risk-budget-unavailable"
+  | "quantity-rules-unavailable"
+  | "quantity-below-minimum"
+  | "structure-invalidated"
+  | "resistance-before-tp1"
+  | "expired"
+  | "trend-invalidated"
+  | "pullback-invalidated"
+  | "hourly-close-below-pullback-low"
+  | "insufficient-data";
+
+export interface EntryPlan {
+  referencePrice: number;
+  entryLower: number;
+  entryUpper: number;
+  pullbackLow: number;
+  structureStop: number;
+  volatilityStop: number;
+  stop: number;
+  riskPerUnit: number;
+  takeProfit1: number;
+  takeProfit2: number;
+  riskReward: number;
+  riskBudgetAmount: number;
+  suggestedQuantity: number;
+  suggestedNotional: number;
+  estimatedStopRisk: number;
+  quantityRules: SpotQuantityRules;
+  validFromMs: number;
+  expiresAtMs: number;
+  currentPrice: number;
+  currentPriceObservedAtMs: number;
+  status: EntryPlanStatus;
+  failure: EntryPlanFailure | null;
+}
+
+export interface BuildEntryPlanInput {
+  referencePrice: number;
+  ema20: number;
+  atr1h: number;
+  atr4h: number;
+  pullbackLow: number;
+  latestOneHourClose: number;
+  confirmationCloseTimeMs: number;
+  analysisTimeMs: number;
+  currentPrice: number | null;
+  currentPriceObservedAtMs: number | null;
+  quoteServerTimeMs: number | null;
+  quantityRules: SpotQuantityRules | null;
+  nearestResistance: PriceZone | null;
+  riskContext: SimulatedRiskContext | null;
+}
+
+export interface UpdateEntryPlanInput {
+  analysisTimeMs: number;
+  dataComplete: boolean;
+  trendQualified: boolean;
+  pullbackValid: boolean;
+  latestOneHourClose: number;
+  currentPrice: number | null;
+  currentPriceObservedAtMs: number | null;
+  quoteServerTimeMs?: number | null;
+  nearestResistance?: PriceZone | null;
+  riskContext?: SimulatedRiskContext | null;
+}
+
+const MAX_ACCOUNT_RISK_FRACTION = 0.01;
+const MAX_SPOT_QUOTE_AGE_MS = 30_000;
+const FUTURE_QUOTE_TOLERANCE_MS = 1_000;
+
+interface SpotRiskAllocation {
+  riskBudgetAmount: number;
+  suggestedQuantity: number;
+  suggestedNotional: number;
+  estimatedStopRisk: number;
+}
+
+// crypto-ai-analysis.MARKET_DATA.7
+export type SpotQuoteFailure = "spot-price-unavailable" | "spot-price-stale";
+
+export function getSpotQuoteFailure(
+  price: number | null,
+  tradeTimeMs: number | null,
+  serverTimeMs: number | null,
+  asOfMs = serverTimeMs,
+): SpotQuoteFailure | null {
+  if (price == null || tradeTimeMs == null || serverTimeMs == null ||
+    !Number.isFinite(price) || price <= 0 || !Number.isFinite(tradeTimeMs) ||
+    !Number.isFinite(serverTimeMs) || asOfMs == null || !Number.isFinite(asOfMs) ||
+    tradeTimeMs <= 0 || serverTimeMs <= 0) return "spot-price-unavailable";
+  const quoteAgeMs = serverTimeMs - tradeTimeMs;
+  if (quoteAgeMs < -FUTURE_QUOTE_TOLERANCE_MS) return "spot-price-stale";
+  const elapsedSinceQuoteMs = asOfMs - serverTimeMs;
+  if (elapsedSinceQuoteMs < -FUTURE_QUOTE_TOLERANCE_MS) return "spot-price-stale";
+  const ageMs = quoteAgeMs + elapsedSinceQuoteMs;
+  return ageMs < -FUTURE_QUOTE_TOLERANCE_MS || ageMs > MAX_SPOT_QUOTE_AGE_MS
+    ? "spot-price-stale"
+    : null;
+}
+
+function isValidSpotQuantityRules(rules: SpotQuantityRules | null | undefined): rules is SpotQuantityRules {
+  return rules != null && Number.isFinite(rules.minQty) && rules.minQty >= 0 &&
+    Number.isFinite(rules.maxQty) && rules.maxQty > 0 && rules.maxQty >= rules.minQty &&
+    Number.isFinite(rules.stepSize) && rules.stepSize > 0;
+}
+
+function decimalPlaces(value: number): number {
+  const [coefficient, exponentValue] = value.toString().toLowerCase().split("e");
+  const exponent = Number(exponentValue ?? 0);
+  return Math.max(0, (coefficient!.split(".")[1]?.length ?? 0) - exponent);
+}
+
+function roundDownToStep(quantity: number, stepSize: number): number {
+  const steps = Math.floor(quantity / stepSize + Number.EPSILON * 8);
+  return Number((steps * stepSize).toFixed(decimalPlaces(stepSize)));
+}
+
+// crypto-ai-analysis.RISK_AND_PAPER_TRADING.5-1
+function calculateSpotRiskAllocation(
+  referencePrice: number,
+  riskPerUnit: number,
+  riskContext: SimulatedRiskContext | null | undefined,
+  quantityRules: SpotQuantityRules,
+): SpotRiskAllocation | null {
+  const accountEquity = riskContext?.accountEquity;
+  const availableQuoteBalance = riskContext?.availableQuoteBalance;
+  if (accountEquity == null || availableQuoteBalance == null ||
+    !Number.isFinite(accountEquity) || accountEquity <= 0 ||
+    !Number.isFinite(availableQuoteBalance) || availableQuoteBalance <= 0) return null;
+
+  const riskBudgetAmount = accountEquity * MAX_ACCOUNT_RISK_FRACTION;
+  const uncappedQuantity = Math.min(
+    riskBudgetAmount / riskPerUnit,
+    availableQuoteBalance / referencePrice,
+    quantityRules.maxQty,
+  );
+  let suggestedQuantity = roundDownToStep(uncappedQuantity, quantityRules.stepSize);
+  if (suggestedQuantity < quantityRules.minQty) return null;
+  let suggestedNotional = suggestedQuantity * referencePrice;
+  let estimatedStopRisk = suggestedQuantity * riskPerUnit;
+  if (suggestedNotional > availableQuoteBalance || estimatedStopRisk > riskBudgetAmount) {
+    suggestedQuantity = roundDownToStep(
+      Math.max(0, suggestedQuantity - quantityRules.stepSize), quantityRules.stepSize,
+    );
+    suggestedNotional = suggestedQuantity * referencePrice;
+    estimatedStopRisk = suggestedQuantity * riskPerUnit;
+  }
+  if (![riskBudgetAmount, suggestedQuantity, suggestedNotional, estimatedStopRisk].every(Number.isFinite) ||
+    riskBudgetAmount <= 0 || suggestedQuantity <= 0 || suggestedQuantity < quantityRules.minQty ||
+    suggestedNotional > availableQuoteBalance || estimatedStopRisk > riskBudgetAmount) return null;
+
+  return { riskBudgetAmount, suggestedQuantity, suggestedNotional, estimatedStopRisk };
+}
+
 export interface HourlyConfirmation {
   ema20Reclaim: boolean;
   breakoutAbovePriorThreeHigh: boolean;
@@ -117,6 +300,7 @@ export interface StrategyEvaluation {
   pullback: PullbackAssessment;
   confirmation: HourlyConfirmation;
   riskReward: number | null;
+  entryPlanStatus: EntryPlanStatus | null;
 }
 
 export interface StrategyEvaluationInput {
@@ -127,6 +311,7 @@ export interface StrategyEvaluationInput {
   analysisTimeMs: number;
   dataComplete?: boolean;
   riskReward?: number | null;
+  entryPlanStatus?: EntryPlanStatus | null;
 }
 
 function assertClosedSeries(interval: SpotInterval, candles: readonly MarketCandle[]): void {
@@ -333,6 +518,207 @@ export function evaluatePullback(
   };
 }
 
+// crypto-ai-analysis.ENTRY_PLAN.1 crypto-ai-analysis.ENTRY_PLAN.1-1 crypto-ai-analysis.ENTRY_PLAN.1-2
+export function identifySupportResistance(
+  candles: readonly MarketCandle[],
+  currentPrice: number,
+  atr4h: number,
+  analysisTimeMs = Number.POSITIVE_INFINITY,
+): SupportResistanceLevels {
+  const closed = candles
+    .filter((row) => row.isClosed && row.closeTimeMs <= analysisTimeMs)
+    .slice(-60);
+  assertClosedSeries("4h", closed);
+  const candidates: Array<{ price: number; touchedAtMs: number; kind: "support" | "resistance" }> = [];
+
+  for (let index = 2; index < closed.length - 2; index += 1) {
+    const point = closed[index]!;
+    const neighbors = [...closed.slice(index - 2, index), ...closed.slice(index + 1, index + 3)];
+    if (neighbors.every((row) => point.low < row.low)) {
+      candidates.push({ price: point.low, touchedAtMs: point.openTimeMs, kind: "support" });
+    }
+    if (neighbors.every((row) => point.high > row.high)) {
+      candidates.push({ price: point.high, touchedAtMs: point.openTimeMs, kind: "resistance" });
+    }
+  }
+
+  const mergeDistance = atr4h * 0.5;
+  function nearest(kind: "support" | "resistance"): PriceZone | null {
+    if (!Number.isFinite(currentPrice) || currentPrice <= 0 || !Number.isFinite(mergeDistance) || mergeDistance <= 0) {
+      return null;
+    }
+    const levels = candidates
+      .filter((item) => item.kind === kind && (kind === "support" ? item.price < currentPrice : item.price > currentPrice))
+      .sort((a, b) => a.price - b.price);
+    const clusters: Array<Array<(typeof levels)[number]>> = [];
+    for (const level of levels) {
+      const cluster = clusters.at(-1);
+      const center = cluster == null
+        ? null
+        : cluster.reduce((sum, item) => sum + item.price, 0) / cluster.length;
+      if (cluster && center != null && Math.abs(level.price - center) <= mergeDistance) cluster.push(level);
+      else clusters.push([level]);
+    }
+    const zones = clusters.map((cluster): PriceZone => {
+      const prices = cluster.map((item) => item.price);
+      return {
+        price: prices.reduce((sum, price) => sum + price, 0) / prices.length,
+        lower: Math.min(...prices),
+        upper: Math.max(...prices),
+        touches: cluster.length,
+        lastTouchedAtMs: Math.max(...cluster.map((item) => item.touchedAtMs)),
+      };
+    });
+    return zones.sort((a, b) => {
+      const distance = Math.abs(a.price - currentPrice) - Math.abs(b.price - currentPrice);
+      return distance || b.touches - a.touches || b.lastTouchedAtMs - a.lastTouchedAtMs;
+    })[0] ?? null;
+  }
+
+  return { support: nearest("support"), resistance: nearest("resistance") };
+}
+
+// crypto-ai-analysis.ENTRY_PLAN.2 crypto-ai-analysis.ENTRY_PLAN.2-1 crypto-ai-analysis.ENTRY_PLAN.3
+// crypto-ai-analysis.ENTRY_PLAN.3-1
+// crypto-ai-analysis.ENTRY_PLAN.4 crypto-ai-analysis.ENTRY_PLAN.4-1 crypto-ai-analysis.ENTRY_PLAN.4-2
+export function buildEntryPlan(input: BuildEntryPlanInput): { plan: EntryPlan | null; failure: EntryPlanFailure | null } {
+  const requiredNumbers = [input.referencePrice, input.ema20, input.atr1h, input.atr4h,
+    input.pullbackLow, input.latestOneHourClose, input.confirmationCloseTimeMs, input.analysisTimeMs];
+  if (requiredNumbers.some((value) => !Number.isFinite(value)) || input.referencePrice <= 0 ||
+    input.atr1h <= 0 || input.atr4h <= 0 || input.pullbackLow <= 0) {
+    return { plan: null, failure: "invalid-input" };
+  }
+  if (input.latestOneHourClose < input.pullbackLow) return { plan: null, failure: "structure-invalidated" };
+  const quoteFailure = getSpotQuoteFailure(
+    input.currentPrice, input.currentPriceObservedAtMs, input.quoteServerTimeMs, input.quoteServerTimeMs,
+  );
+  if (quoteFailure) return { plan: null, failure: quoteFailure };
+  const currentPrice = input.currentPrice!;
+  if (!isValidSpotQuantityRules(input.quantityRules)) {
+    return { plan: null, failure: "quantity-rules-unavailable" };
+  }
+
+  const entryLower = Math.max(input.ema20, input.referencePrice - 0.25 * input.atr1h);
+  const entryUpper = input.referencePrice + 0.1 * input.atr1h;
+  const structureStop = input.pullbackLow - 0.25 * input.atr4h;
+  const volatilityStop = input.referencePrice - 1.5 * input.atr1h;
+  const stop = Math.min(structureStop, volatilityStop);
+  const riskPerUnit = input.referencePrice - stop;
+  if (![entryLower, entryUpper, structureStop, volatilityStop, stop, riskPerUnit].every(Number.isFinite) ||
+    entryLower > entryUpper || stop <= 0 || riskPerUnit <= 0) {
+    return { plan: null, failure: "invalid-input" };
+  }
+
+  const riskContext = input.riskContext;
+  if (riskContext?.accountEquity == null || riskContext.availableQuoteBalance == null ||
+    !Number.isFinite(riskContext.accountEquity) || riskContext.accountEquity <= 0 ||
+    !Number.isFinite(riskContext.availableQuoteBalance) || riskContext.availableQuoteBalance <= 0) {
+    return { plan: null, failure: "risk-budget-unavailable" };
+  }
+  const riskAllocation = calculateSpotRiskAllocation(
+    entryUpper, entryUpper - stop, riskContext, input.quantityRules,
+  );
+  if (!riskAllocation) return { plan: null, failure: "quantity-below-minimum" };
+
+  const takeProfit1 = input.referencePrice + 2 * riskPerUnit;
+  if (input.nearestResistance && input.nearestResistance.price < takeProfit1) {
+    return { plan: null, failure: "resistance-before-tp1" };
+  }
+  const takeProfit2 = input.nearestResistance?.price ?? input.referencePrice + 3 * riskPerUnit;
+  const validFromMs = input.confirmationCloseTimeMs + 1;
+  const expiresAtMs = input.confirmationCloseTimeMs + 3 * intervalToMs("1h");
+  if (input.analysisTimeMs >= expiresAtMs) return { plan: null, failure: "expired" };
+  const status = input.analysisTimeMs >= validFromMs && currentPrice >= entryLower && currentPrice <= entryUpper
+    ? "active"
+    : "waiting-for-price";
+
+  return {
+    failure: null,
+    plan: {
+      referencePrice: input.referencePrice,
+      entryLower,
+      entryUpper,
+      pullbackLow: input.pullbackLow,
+      structureStop,
+      volatilityStop,
+      stop,
+      riskPerUnit,
+      takeProfit1,
+      takeProfit2,
+      riskReward: (takeProfit1 - input.referencePrice) / riskPerUnit,
+      ...riskAllocation,
+      quantityRules: input.quantityRules,
+      validFromMs,
+      expiresAtMs,
+      currentPrice,
+      currentPriceObservedAtMs: input.currentPriceObservedAtMs!,
+      status,
+      failure: null,
+    },
+  };
+}
+
+// crypto-ai-analysis.ENTRY_PLAN.3-1 crypto-ai-analysis.ENTRY_PLAN.5 crypto-ai-analysis.ENTRY_PLAN.5-1
+export function updateEntryPlan(plan: EntryPlan, input: UpdateEntryPlanInput): EntryPlan {
+  let failure: EntryPlanFailure | null = null;
+  let status: EntryPlanStatus = "active";
+  if (!input.dataComplete) failure = "insufficient-data";
+  else if (input.analysisTimeMs >= plan.expiresAtMs) failure = "expired";
+  else if (!input.trendQualified) failure = "trend-invalidated";
+  else if (!input.pullbackValid) failure = "pullback-invalidated";
+  else if (!Number.isFinite(input.latestOneHourClose) || input.latestOneHourClose < plan.pullbackLow) {
+    failure = "hourly-close-below-pullback-low";
+  } else if (input.nearestResistance && input.nearestResistance.price < plan.takeProfit1) {
+    failure = "resistance-before-tp1";
+  } else {
+    failure = getSpotQuoteFailure(
+      input.currentPrice,
+      input.currentPriceObservedAtMs,
+      input.quoteServerTimeMs ?? input.analysisTimeMs,
+      input.quoteServerTimeMs ?? input.analysisTimeMs,
+    );
+  }
+  const riskContext = input.riskContext;
+  const riskContextAvailable = riskContext?.accountEquity != null &&
+    riskContext.availableQuoteBalance != null && Number.isFinite(riskContext.accountEquity) &&
+    riskContext.accountEquity > 0 && Number.isFinite(riskContext.availableQuoteBalance) &&
+    riskContext.availableQuoteBalance > 0;
+  const riskAllocation = input.riskContext === undefined || !riskContextAvailable ||
+    !isValidSpotQuantityRules(plan.quantityRules)
+    ? null
+    : calculateSpotRiskAllocation(
+      plan.entryUpper, plan.entryUpper - plan.stop, riskContext, plan.quantityRules,
+    );
+  if (!failure && input.riskContext !== undefined && !riskContextAvailable) {
+    failure = "risk-budget-unavailable";
+  } else if (!failure && input.riskContext !== undefined && !riskAllocation) {
+    failure = isValidSpotQuantityRules(plan.quantityRules)
+      ? "quantity-below-minimum"
+      : "quantity-rules-unavailable";
+  }
+
+  if (failure) {
+    status = failure === "expired" ? "expired"
+      : failure === "spot-price-unavailable" || failure === "spot-price-stale" ? "waiting-for-price"
+        : "invalidated";
+  } else {
+    status = input.analysisTimeMs >= plan.validFromMs &&
+      input.currentPrice! >= plan.entryLower && input.currentPrice! <= plan.entryUpper
+      ? "active"
+      : "waiting-for-price";
+  }
+
+  return {
+    ...plan,
+    currentPrice: input.currentPrice ?? plan.currentPrice,
+    currentPriceObservedAtMs: input.currentPriceObservedAtMs ?? plan.currentPriceObservedAtMs,
+    takeProfit2: input.nearestResistance?.price ?? plan.referencePrice + 3 * plan.riskPerUnit,
+    ...(riskAllocation ?? {}),
+    status,
+    failure,
+  };
+}
+
 // crypto-ai-analysis.STRATEGY.6 crypto-ai-analysis.STRATEGY.7
 export function evaluateHourlyConfirmation(
   candles: readonly MarketCandle[],
@@ -411,6 +797,7 @@ export function evaluateStrategy(input: StrategyEvaluationInput): StrategyEvalua
   };
   const dataComplete = input.dataComplete ?? true;
   const riskReward = input.riskReward ?? null;
+  const entryPlanStatus = input.entryPlanStatus ?? null;
 
   let state: StrategyState;
   let avoidReason: StrategyAvoidReason | null = null;
@@ -425,7 +812,9 @@ export function evaluateStrategy(input: StrategyEvaluationInput): StrategyEvalua
     avoidReason = "pullback-invalidated";
   } else if (!fourHourPullback.enteredZone) {
     state = "watch";
-  } else if (!hourlyConfirmation.passed) {
+  } else if (entryPlanStatus === "waiting-for-price") {
+    state = "setup";
+  } else if (!hourlyConfirmation.passed && entryPlanStatus !== "active") {
     state = "setup";
   } else if (scoreBreakdown.total < 70) {
     state = "avoid";
@@ -447,5 +836,6 @@ export function evaluateStrategy(input: StrategyEvaluationInput): StrategyEvalua
     pullback: fourHourPullback,
     confirmation: hourlyConfirmation,
     riskReward,
+    entryPlanStatus,
   };
 }

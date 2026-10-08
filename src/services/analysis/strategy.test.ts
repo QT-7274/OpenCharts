@@ -2,13 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   TREND_PULLBACK_V1,
   buildIndicatorSnapshot,
+  buildEntryPlan,
   evaluateHourlyConfirmation,
   evaluatePullback,
   evaluateStrategy,
   evaluateTrendGate,
+  identifySupportResistance,
+  updateEntryPlan,
 } from "./strategy.ts";
 import { BASE, MS } from "./fixtures.ts";
 import type { MarketCandle, SpotInterval } from "../market-data/types.ts";
+
+const QUANTITY_RULES = { minQty: 0.001, maxQty: 1_000_000, stepSize: 0.001 } as const;
 
 function trendCandles(interval: SpotInterval, count: number, start: number, step: number): MarketCandle[] {
   return Array.from({ length: count }, (_, index) => {
@@ -205,6 +210,374 @@ describe("trend-pullback-v1 indicator and trend gate", () => {
     expect(confirmation.rsiAtLeast50).toBe(true);
     expect(confirmation.rsiRising).toBe(true);
     expect(confirmation.passed).toBe(true);
+  });
+
+  it("crypto-ai-analysis.ENTRY_PLAN.1 crypto-ai-analysis.ENTRY_PLAN.1-1 crypto-ai-analysis.ENTRY_PLAN.1-2 confirms pivots after two bars and merges nearby zones", () => {
+    const candles = Array.from({ length: 60 }, (_, index) => {
+      const openTimeMs = BASE + index * MS["4h"];
+      return {
+        ...trendCandles("4h", 1, 100, 0)[0]!,
+        openTimeMs,
+        closeTimeMs: openTimeMs + MS["4h"] - 1,
+        high: 102,
+        low: 98,
+      };
+    });
+    candles[18] = { ...candles[18]!, low: 90 };
+    candles[24] = { ...candles[24]!, low: 90.5 };
+    candles[38] = { ...candles[38]!, high: 110 };
+    candles[44] = { ...candles[44]!, high: 110.4 };
+    candles[57] = { ...candles[57]!, low: 80 };
+
+    const levels = identifySupportResistance(candles, 100, 2);
+
+    expect(levels.support).toEqual(expect.objectContaining({
+      price: 90.25,
+      touches: 2,
+      lastTouchedAtMs: candles[24]!.openTimeMs,
+    }));
+    expect(levels.resistance).toEqual(expect.objectContaining({ price: 110.2, touches: 2 }));
+    expect(levels.support?.price).not.toBe(80);
+
+    const asOfBeforeConfirmation = identifySupportResistance(
+      candles, 100, 2, candles[58]!.closeTimeMs,
+    );
+    expect(asOfBeforeConfirmation.support?.price).not.toBe(80);
+  });
+
+  it("crypto-ai-analysis.ENTRY_PLAN.2 crypto-ai-analysis.ENTRY_PLAN.3 crypto-ai-analysis.ENTRY_PLAN.4 crypto-ai-analysis.ENTRY_PLAN.4-1 crypto-ai-analysis.VALIDATION.6 delays plan activation until the next hourly candle", () => {
+    const confirmationCloseTimeMs = BASE + 100 * MS["1h"];
+    const result = buildEntryPlan({
+      referencePrice: 100,
+      ema20: 99,
+      atr1h: 2,
+      atr4h: 4,
+      pullbackLow: 90,
+      latestOneHourClose: 100,
+      confirmationCloseTimeMs,
+      analysisTimeMs: confirmationCloseTimeMs,
+      currentPrice: 100.1,
+      currentPriceObservedAtMs: confirmationCloseTimeMs,
+      quoteServerTimeMs: confirmationCloseTimeMs,
+      quantityRules: QUANTITY_RULES,
+      nearestResistance: null,
+      riskContext: { accountEquity: 100_000, availableQuoteBalance: 100_000 },
+    });
+
+    expect(result.failure).toBeNull();
+    expect(result.plan).toMatchObject({
+      referencePrice: 100,
+      entryLower: 99.5,
+      entryUpper: 100.2,
+      structureStop: 89,
+      volatilityStop: 97,
+      stop: 89,
+      riskPerUnit: 11,
+      takeProfit1: 122,
+      takeProfit2: 133,
+      riskReward: 2,
+      riskBudgetAmount: 1_000,
+      suggestedQuantity: 89.285,
+      suggestedNotional: expect.closeTo(8_946.357, 6),
+      estimatedStopRisk: expect.closeTo(999.992, 6),
+      validFromMs: confirmationCloseTimeMs + 1,
+      expiresAtMs: confirmationCloseTimeMs + 3 * MS["1h"],
+      status: "waiting-for-price",
+    });
+    expect(updateEntryPlan(result.plan!, {
+      analysisTimeMs: result.plan!.validFromMs,
+      dataComplete: true,
+      trendQualified: true,
+      pullbackValid: true,
+      latestOneHourClose: 100,
+      currentPrice: 100.1,
+      currentPriceObservedAtMs: result.plan!.validFromMs,
+      quoteServerTimeMs: result.plan!.validFromMs,
+    })).toMatchObject({ status: "active", failure: null });
+  });
+
+  it("crypto-ai-analysis.ENTRY_PLAN.3-1 caps spot sizing at one percent of equity and available quote balance", () => {
+    const confirmationCloseTimeMs = BASE + 100 * MS["1h"];
+    const input = {
+      referencePrice: 100,
+      ema20: 99,
+      atr1h: 2,
+      atr4h: 4,
+      pullbackLow: 90,
+      latestOneHourClose: 100,
+      confirmationCloseTimeMs,
+      analysisTimeMs: confirmationCloseTimeMs,
+      currentPrice: 100,
+      currentPriceObservedAtMs: confirmationCloseTimeMs,
+      quoteServerTimeMs: confirmationCloseTimeMs,
+      quantityRules: QUANTITY_RULES,
+      nearestResistance: null,
+      riskContext: { accountEquity: 100_000, availableQuoteBalance: 50 },
+    };
+    const sized = buildEntryPlan(input);
+    expect(sized.plan).toMatchObject({
+      riskBudgetAmount: 1_000,
+      suggestedQuantity: 0.499,
+      suggestedNotional: expect.closeTo(49.9998, 6),
+      estimatedStopRisk: expect.closeTo(5.5888, 6),
+    });
+    expect(sized.plan?.suggestedQuantity).toBeGreaterThanOrEqual(QUANTITY_RULES.minQty);
+    expect(sized.plan?.suggestedQuantity! / QUANTITY_RULES.stepSize).toBeCloseTo(
+      Math.floor(sized.plan!.suggestedQuantity / QUANTITY_RULES.stepSize), 8,
+    );
+    expect(sized.plan?.estimatedStopRisk).toBeLessThanOrEqual(1_000);
+    expect(buildEntryPlan({
+      ...input,
+      riskContext: { ...input.riskContext, availableQuoteBalance: 0.05 },
+      quantityRules: { ...QUANTITY_RULES, minQty: 0.01 },
+    }).failure).toBe("quantity-below-minimum");
+    expect(buildEntryPlan({
+      ...input,
+      riskContext: { ...input.riskContext, accountEquity: null },
+    }).failure).toBe("risk-budget-unavailable");
+  });
+
+  it("crypto-ai-analysis.MARKET_DATA.7 rejects stale exchange quotes for entry plans", () => {
+    const confirmationCloseTimeMs = BASE + 100 * MS["1h"];
+    const result = buildEntryPlan({
+      referencePrice: 100,
+      ema20: 99,
+      atr1h: 2,
+      atr4h: 4,
+      pullbackLow: 90,
+      latestOneHourClose: 100,
+      confirmationCloseTimeMs,
+      analysisTimeMs: confirmationCloseTimeMs,
+      currentPrice: 100,
+      currentPriceObservedAtMs: confirmationCloseTimeMs,
+      quoteServerTimeMs: confirmationCloseTimeMs + 30_001,
+      quantityRules: QUANTITY_RULES,
+      nearestResistance: null,
+      riskContext: { accountEquity: 100_000, availableQuoteBalance: 100_000 },
+    });
+
+    expect(result).toEqual({ plan: null, failure: "spot-price-stale" });
+  });
+
+  it("crypto-ai-analysis.ENTRY_PLAN.2-1 crypto-ai-analysis.ENTRY_PLAN.5-1 waits above the entry range without cancelling the plan", () => {
+    const confirmationCloseTimeMs = BASE + 100 * MS["1h"];
+    const result = buildEntryPlan({
+      referencePrice: 100,
+      ema20: 99,
+      atr1h: 2,
+      atr4h: 4,
+      pullbackLow: 90,
+      latestOneHourClose: 100,
+      confirmationCloseTimeMs,
+      analysisTimeMs: confirmationCloseTimeMs,
+      currentPrice: 101,
+      currentPriceObservedAtMs: confirmationCloseTimeMs,
+      quoteServerTimeMs: confirmationCloseTimeMs,
+      quantityRules: QUANTITY_RULES,
+      nearestResistance: null,
+      riskContext: { accountEquity: 100_000, availableQuoteBalance: 100_000 },
+    });
+
+    expect(result.failure).toBeNull();
+    expect(result.plan?.status).toBe("waiting-for-price");
+    expect(result.plan?.expiresAtMs).toBe(confirmationCloseTimeMs + 3 * MS["1h"]);
+  });
+
+  it("crypto-ai-analysis.ENTRY_PLAN.3 crypto-ai-analysis.ENTRY_PLAN.4-1 rejects broken structure and resistance below TP1", () => {
+    const confirmationCloseTimeMs = BASE + 100 * MS["1h"];
+    const baseInput = {
+      referencePrice: 100,
+      ema20: 99,
+      atr1h: 2,
+      atr4h: 4,
+      pullbackLow: 90,
+      latestOneHourClose: 100,
+      confirmationCloseTimeMs,
+      analysisTimeMs: confirmationCloseTimeMs,
+      currentPrice: 100,
+      currentPriceObservedAtMs: confirmationCloseTimeMs,
+      quoteServerTimeMs: confirmationCloseTimeMs,
+      quantityRules: QUANTITY_RULES,
+      nearestResistance: null,
+      riskContext: { accountEquity: 100_000, availableQuoteBalance: 100_000 },
+    };
+
+    expect(buildEntryPlan({ ...baseInput, latestOneHourClose: 89 }).failure).toBe("structure-invalidated");
+    expect(buildEntryPlan({
+      ...baseInput,
+      nearestResistance: {
+        price: 110,
+        lower: 109,
+        upper: 111,
+        touches: 2,
+        lastTouchedAtMs: confirmationCloseTimeMs,
+      },
+    }).failure).toBe("resistance-before-tp1");
+
+    const validResistance = buildEntryPlan({
+      ...baseInput,
+      nearestResistance: {
+        price: 130,
+        lower: 129,
+        upper: 131,
+        touches: 1,
+        lastTouchedAtMs: confirmationCloseTimeMs,
+      },
+    });
+    expect(validResistance.plan?.takeProfit2).toBe(130);
+  });
+
+  it("crypto-ai-analysis.ENTRY_PLAN.5 crypto-ai-analysis.ENTRY_PLAN.5-1 expires after three hourly bars and cancels on invalidation", () => {
+    const confirmationCloseTimeMs = BASE + 100 * MS["1h"];
+    const built = buildEntryPlan({
+      referencePrice: 100,
+      ema20: 99,
+      atr1h: 2,
+      atr4h: 4,
+      pullbackLow: 90,
+      latestOneHourClose: 100,
+      confirmationCloseTimeMs,
+      analysisTimeMs: confirmationCloseTimeMs,
+      currentPrice: 100,
+      currentPriceObservedAtMs: confirmationCloseTimeMs,
+      quoteServerTimeMs: confirmationCloseTimeMs,
+      quantityRules: QUANTITY_RULES,
+      nearestResistance: null,
+      riskContext: { accountEquity: 100_000, availableQuoteBalance: 100_000 },
+    });
+    expect(built.plan).not.toBeNull();
+    const plan = built.plan!;
+
+    expect(updateEntryPlan(plan, {
+      analysisTimeMs: plan.expiresAtMs - 1,
+      dataComplete: true,
+      trendQualified: true,
+      pullbackValid: true,
+      latestOneHourClose: 100,
+      currentPrice: 101,
+      currentPriceObservedAtMs: plan.expiresAtMs - 1,
+    })).toMatchObject({ status: "waiting-for-price", failure: null });
+    expect(updateEntryPlan(plan, {
+      analysisTimeMs: plan.expiresAtMs,
+      dataComplete: true,
+      trendQualified: true,
+      pullbackValid: true,
+      latestOneHourClose: 100,
+      currentPrice: 100,
+      currentPriceObservedAtMs: plan.expiresAtMs,
+    })).toMatchObject({ status: "expired", failure: "expired" });
+    expect(updateEntryPlan(plan, {
+      analysisTimeMs: plan.validFromMs,
+      dataComplete: true,
+      trendQualified: true,
+      pullbackValid: true,
+      latestOneHourClose: 89,
+      currentPrice: 100,
+      currentPriceObservedAtMs: plan.validFromMs,
+    })).toMatchObject({ status: "invalidated", failure: "hourly-close-below-pullback-low" });
+    expect(updateEntryPlan(plan, {
+      analysisTimeMs: plan.validFromMs,
+      dataComplete: false,
+      trendQualified: true,
+      pullbackValid: true,
+      latestOneHourClose: 100,
+      currentPrice: 100,
+      currentPriceObservedAtMs: plan.validFromMs,
+    })).toMatchObject({ status: "invalidated", failure: "insufficient-data" });
+    expect(updateEntryPlan(plan, {
+      analysisTimeMs: plan.validFromMs,
+      dataComplete: true,
+      trendQualified: false,
+      pullbackValid: true,
+      latestOneHourClose: 100,
+      currentPrice: 100,
+      currentPriceObservedAtMs: plan.validFromMs,
+    })).toMatchObject({ status: "invalidated", failure: "trend-invalidated" });
+    expect(updateEntryPlan(plan, {
+      analysisTimeMs: plan.validFromMs,
+      dataComplete: true,
+      trendQualified: true,
+      pullbackValid: false,
+      latestOneHourClose: 100,
+      currentPrice: 100,
+      currentPriceObservedAtMs: plan.validFromMs,
+    })).toMatchObject({ status: "invalidated", failure: "pullback-invalidated" });
+    expect(updateEntryPlan(plan, {
+      analysisTimeMs: plan.validFromMs,
+      dataComplete: true,
+      trendQualified: true,
+      pullbackValid: true,
+      latestOneHourClose: 100,
+      currentPrice: 100,
+      currentPriceObservedAtMs: plan.validFromMs,
+      nearestResistance: {
+        price: 110,
+        lower: 109,
+        upper: 111,
+        touches: 1,
+        lastTouchedAtMs: plan.validFromMs,
+      },
+    })).toMatchObject({ status: "invalidated", failure: "resistance-before-tp1" });
+    expect(updateEntryPlan(plan, {
+      analysisTimeMs: plan.validFromMs,
+      dataComplete: true,
+      trendQualified: true,
+      pullbackValid: true,
+      latestOneHourClose: 100,
+      currentPrice: 100,
+      currentPriceObservedAtMs: plan.validFromMs,
+      nearestResistance: {
+        price: 130,
+        lower: 129,
+        upper: 131,
+        touches: 1,
+        lastTouchedAtMs: plan.validFromMs,
+      },
+    })).toMatchObject({ status: "active", takeProfit2: 130 });
+    expect(updateEntryPlan(plan, {
+      analysisTimeMs: plan.validFromMs,
+      dataComplete: true,
+      trendQualified: true,
+      pullbackValid: true,
+      latestOneHourClose: 100,
+      currentPrice: null,
+      currentPriceObservedAtMs: null,
+    })).toMatchObject({ status: "waiting-for-price", failure: "spot-price-unavailable" });
+    expect(updateEntryPlan(plan, {
+      analysisTimeMs: plan.validFromMs,
+      dataComplete: true,
+      trendQualified: true,
+      pullbackValid: true,
+      latestOneHourClose: 100,
+      currentPrice: 100,
+      currentPriceObservedAtMs: plan.validFromMs - 30_001,
+      quoteServerTimeMs: plan.validFromMs,
+    })).toMatchObject({ status: "waiting-for-price", failure: "spot-price-stale" });
+    const resized = updateEntryPlan(plan, {
+      analysisTimeMs: plan.validFromMs,
+      dataComplete: true,
+      trendQualified: true,
+      pullbackValid: true,
+      latestOneHourClose: 100,
+      currentPrice: 100,
+      currentPriceObservedAtMs: plan.validFromMs,
+      riskContext: { accountEquity: 10_000, availableQuoteBalance: 50_000 },
+    });
+    expect(resized).toMatchObject({
+      status: "active",
+      riskBudgetAmount: 100,
+    });
+    expect(resized.estimatedStopRisk).toBeLessThanOrEqual(100);
+    expect(updateEntryPlan(plan, {
+      analysisTimeMs: plan.validFromMs,
+      dataComplete: true,
+      trendQualified: true,
+      pullbackValid: true,
+      latestOneHourClose: 100,
+      currentPrice: 100,
+      currentPriceObservedAtMs: plan.validFromMs,
+      riskContext: null,
+    })).toMatchObject({ status: "invalidated", failure: "risk-budget-unavailable" });
   });
 
   it("crypto-ai-analysis.CANDLE_QUALITY.2 refuses partial candles at the strategy boundary", () => {

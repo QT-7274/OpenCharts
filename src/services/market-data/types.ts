@@ -58,12 +58,21 @@ export interface SpotSymbolMetadata {
   baseAsset: string;
   quoteAsset: string;
   tickSize: number;
+  minQty: number;
+  maxQty: number;
   stepSize: number;
+}
+
+export interface SpotQuote {
+  price: number;
+  tradeTimeMs: number;
+  serverTimeMs: number;
 }
 
 export interface MarketDataRestAdapter {
   getServerTime(): Promise<number>;
   getSpotSymbols(): Promise<SpotSymbolMetadata[]>;
+  getSpotQuote(symbol: SpotSymbol): Promise<SpotQuote>;
   getCandles(input: CandleRequest): Promise<MarketCandle[]>;
 }
 

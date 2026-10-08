@@ -32,6 +32,7 @@ function restAdapter(): MarketDataRestAdapter {
   return {
     getServerTime: vi.fn().mockResolvedValue(1_710_003_600_000),
     getSpotSymbols: vi.fn().mockResolvedValue([]),
+    getSpotQuote: vi.fn().mockResolvedValue({ price: 100, tradeTimeMs: 0, serverTimeMs: 0 }),
     getCandles: vi.fn().mockResolvedValue([
       {
         symbol: "BTCUSDT",
@@ -158,6 +159,7 @@ describe("Binance WebSocket adapter", () => {
     const adapter: MarketDataRestAdapter = {
       getServerTime: vi.fn().mockResolvedValue(1_710_003_600_000),
       getSpotSymbols: vi.fn().mockResolvedValue([]),
+      getSpotQuote: vi.fn().mockResolvedValue({ price: 100, tradeTimeMs: 0, serverTimeMs: 0 }),
       getCandles: vi.fn().mockReturnValue(pendingCandles),
     };
     const stream = new BinanceKlineStream({
@@ -187,6 +189,7 @@ describe("Binance WebSocket adapter", () => {
     const adapter: MarketDataRestAdapter = {
       getServerTime: vi.fn().mockResolvedValue(1_710_003_600_000),
       getSpotSymbols: vi.fn().mockResolvedValue([]),
+      getSpotQuote: vi.fn().mockResolvedValue({ price: 100, tradeTimeMs: 0, serverTimeMs: 0 }),
       getCandles: vi.fn().mockReturnValue(pendingCandles),
     };
     const stream = new BinanceKlineStream({
@@ -234,6 +237,7 @@ describe("Binance WebSocket adapter", () => {
         .mockResolvedValueOnce(1_710_003_600_000)
         .mockResolvedValueOnce(1_710_007_200_000),
       getSpotSymbols: vi.fn().mockResolvedValue([]),
+      getSpotQuote: vi.fn().mockResolvedValue({ price: 100, tradeTimeMs: 0, serverTimeMs: 0 }),
       getCandles: vi
         .fn()
         .mockResolvedValueOnce([firstClosed])
@@ -304,6 +308,7 @@ describe("Binance WebSocket adapter", () => {
     const adapter: MarketDataRestAdapter = {
       getServerTime: vi.fn().mockResolvedValue(1_710_007_200_000),
       getSpotSymbols: vi.fn().mockResolvedValue([]),
+      getSpotQuote: vi.fn().mockResolvedValue({ price: 100, tradeTimeMs: 0, serverTimeMs: 0 }),
       getCandles: vi.fn().mockResolvedValue([
         {
           symbol: "BTCUSDT",
@@ -354,6 +359,7 @@ describe("Binance WebSocket adapter", () => {
         .mockResolvedValueOnce(baseOpenTimeMs + 4 * intervalMs)
         .mockResolvedValueOnce(baseOpenTimeMs + 4 * intervalMs),
       getSpotSymbols: vi.fn().mockResolvedValue([]),
+      getSpotQuote: vi.fn().mockResolvedValue({ price: 100, tradeTimeMs: 0, serverTimeMs: 0 }),
       getCandles: vi
         .fn()
         .mockResolvedValueOnce([closedCandle(baseOpenTimeMs)])
