@@ -74,7 +74,14 @@ async function resolveResponse<T>(res: Response): Promise<T> {
     const message = firstFieldMessage || err.message || res.statusText;
     throw new ApiError(res.status, code, message, err.details);
   }
-  return json?.data ?? json;
+  if (
+    json !== null &&
+    typeof json === "object" &&
+    Object.prototype.hasOwnProperty.call(json, "data")
+  ) {
+    return json.data;
+  }
+  return json;
 }
 
 export interface RequestOptions extends RequestInit {

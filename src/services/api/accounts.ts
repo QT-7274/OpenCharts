@@ -1,6 +1,8 @@
 import { request } from "./request";
 import type { Account, AccountStats, EquityPoint, LedgerEntry } from "../schemas";
 import type { PnlCalendarResponse } from "@propsim/types";
+import type { ReplaySessionData } from "./contract.ts";
+import { ReplaySessionResponseSchema } from "./contract.ts";
 
 export type PayoutCalculation = {
   grossProfit: number;
@@ -97,28 +99,10 @@ export const accountsApi = {
   },
 
   // ── Replay ──
-  replayGetSession: (accountId: string, date: string) =>
-    request<{
-      replaySession: {
-        id: string;
-        status: string;
-        speed: number;
-        cursorTimestamp: string | null;
-        sessionDate: string;
-      };
-      tickBuffer: Array<{ t: number; o: number; h: number; l: number; c: number; v: number }>;
-      tradeEvents: Array<{
-        id: string;
-        type: "entry" | "exit" | "violation";
-        timestamp: string;
-        symbolName: string | null;
-        side: string | null;
-        price: number | null;
-        pnl: number | null;
-        ruleCode?: string;
-      }>;
-      meta: { primarySymbol: string | null; sessionDate: string; tickCount: number };
-    }>(`/accounts/${accountId}/replay/session?date=${date}`),
+  replayGetSession: (accountId: string, date: string): Promise<ReplaySessionData | null> =>
+    request<unknown>(`/accounts/${accountId}/replay/session?date=${date}`).then((payload) =>
+      ReplaySessionResponseSchema.parse(payload),
+    ),
 
   replayStart: (accountId: string, sessionDate: string, speed = 1) =>
     request<{ speed: number; seed: number | null }>(`/accounts/${accountId}/replay/start`, {

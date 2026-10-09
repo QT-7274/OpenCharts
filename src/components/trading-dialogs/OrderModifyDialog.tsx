@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { api } from "../../services/api";
+import { unsupportedApi } from "../../services/api";
 import { toast } from "../../services/toast";
 import { cn, formatNumber } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -76,7 +76,7 @@ export function OrderModifyDialog({ order, onClose, onSaved, tick }: OrderModify
         return;
       }
 
-      await api.modifyOrder(order.id, modifications);
+      await unsupportedApi.modifyOrder(order.id, modifications);
       toast.success("Order Modified", "Pending order has been updated");
       onSaved();
     } catch (err: unknown) {

@@ -2,10 +2,10 @@ import { useEffect, useMemo } from "react";
 import { accountsApi } from "../../services/api/accounts.ts";
 import { useReplaySession } from "../../services/queries.ts";
 import type { Candle } from "../../services/schemas.ts";
+import type { ReplaySessionData } from "../../services/api/contract.ts";
 import { useTradingStore } from "../../services/store.tsx";
 import { toast } from "../../services/toast.ts";
 
-type ReplaySessionData = Awaited<ReturnType<typeof accountsApi.replayGetSession>>;
 type ReplayTradeEvents = ReplaySessionData["tradeEvents"];
 type TickBar = ReplaySessionData["tickBuffer"][number];
 
@@ -20,10 +20,13 @@ function sliceBufferToCursor(buf: TickBar[], cursorMs: number | null): Candle[] 
   return out;
 }
 
-function emptySessionReason(data: ReplaySessionData, sessionDate: string): string {
-  return data.meta?.primarySymbol
-    ? `No 1m candle history stored for ${data.meta.primarySymbol} on ${sessionDate}`
-    : `No trading activity found on ${sessionDate}`;
+function emptySessionReason(data: ReplaySessionData | null, sessionDate: string): string {
+  if (data?.meta?.primarySymbol) {
+    return `No 1m candle history stored for ${data.meta.primarySymbol} on ${sessionDate}`;
+  }
+  return data
+    ? `No trading activity found on ${sessionDate}`
+    : `No replay session found for ${sessionDate}`;
 }
 
 /**
@@ -55,11 +58,13 @@ export function useReplayChartData(accountId: string | null): {
     if (replaySymbol) setSelectedSymbol(replaySymbol);
   }, [replaySymbol, setSelectedSymbol]);
 
-  // Empty session — no positions that day, or no 1m history stored. Stop and
-  // tell the trader why; the old behavior was an idle loop with a frozen HUD.
+  // api-type-contract-repair.QUERY_LAYER.2-1
+  // Missing/empty sessions stop playback and clear stale replay state.
   useEffect(() => {
-    if (!isReplaying || !data || !replaySessionDate || !accountId) return;
-    if (data.tickBuffer.length > 0) return;
+    if (!isReplaying || data === undefined || !replaySessionDate || !accountId) return;
+    const currentReplay = useTradingStore.getState();
+    if (!currentReplay.isReplaying || currentReplay.replaySessionDate !== replaySessionDate) return;
+    if (data && data.tickBuffer.length > 0) return;
     toast.warning("Replay unavailable", emptySessionReason(data, replaySessionDate));
     accountsApi.replayStop(accountId, replaySessionDate).catch(() => null);
     useTradingStore.getState().onReplayStateChanged("stopped");

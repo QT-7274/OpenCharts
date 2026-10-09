@@ -1,0 +1,56 @@
+feature:
+  name: api-type-contract-repair
+  product: opencharts
+  description: 修复 API facade、Demo 实现、查询层和回放数据之间的类型契约，使类型检查能够真实发现接口不一致并稳定通过。
+
+components:
+  API_CONTRACT:
+    requirements:
+      1: API facade 必须暴露明确且可检查的 API 接口，逐个声明支持的方法、参数类型和 Promise 返回类型。
+      1-1: 已支持方法的参数列表和返回响应类型必须来自共享类型定义，不能使用 never[]、unknown 或宽泛动态索引作为兜底契约。
+      1-2: API facade 不得通过动态 Proxy 为未声明方法返回成功态的空值或无操作 Promise。
+      2: Demo API 实现必须完整满足已声明接口，方法参数、返回字段、可空字段和错误语义必须与接口一致。
+      2-1: Demo 空数据必须返回对应响应类型的合法空结构，不能用与查询契约无关的 null、空数组或 unknown 静默替代响应。
+      2-2: 未实现的真实 API 能力必须从 Demo 支持接口中明确区分；调用方必须移除无效调用或显式处理不支持结果。
+
+  QUERY_LAYER:
+    requirements:
+      1: 查询和 mutation hook 只能调用 API 接口中已声明的方法，并传入与方法签名匹配的参数。
+      1-1: 每个 hook 的 React Query 泛型必须与对应 API 响应类型一致，查询函数不得通过类型断言掩盖响应形状差异。
+      1-2: mutation 的输入、输出和回调变量必须保持完整类型，不能因 API 方法缺失而退化为 undefined、never 或 unknown。
+      2: 查询层必须准确表达响应中的 null、undefined 和空集合语义，调用方不得访问未被类型保证存在的字段。
+      2-1: 回放会话不存在、回放数据为空或回放事件缺失时，hook 与组件必须使用显式的可空数据模型并保持安全的空状态行为。
+      2-2: 行情、账户、日志、分析和分页响应的字段结构必须与 Demo 响应及现有共享 schema 对齐。
+
+  RUNTIME_COMPATIBILITY:
+    requirements:
+      1: 修复类型契约后，Demo 模式现有账户、行情、交易、回放、日志和图表流程的运行时行为必须保持可用。
+      1-1: 对未支持能力的处理必须可观察且可区分于成功返回，不能把接口缺失伪装成已保存、已加载或空结果。
+      2: 回放、行情元数据和本地模拟数据的实际返回值必须通过共享响应类型验证，避免实现与查询层各自维护不一致的形状。
+
+  TYPECHECK_GATE:
+    requirements:
+      1: "`npm run typecheck` 必须成功退出，并且 TypeScript 诊断数量为零。"
+      1-1: 类型检查必须覆盖 API facade、Demo API、查询层、回放 hooks、相关组件和 store 的完整项目编译范围。
+      2: "修复必须保留现有 `npm test` 和 `npm run build` 的通过结果，不得以关闭严格检查、扩大 any 或删除功能调用来降低门槛。"
+      3: "CI 必须执行 `npm run typecheck`，类型检查失败时不得通过构建门禁。"
+
+  REGRESSION_COVERAGE:
+    requirements:
+      1: 必须为代表性的 API 接口、Demo 空响应、查询返回形状和回放可空数据增加可重复的类型或运行时回归验证。
+      1-1: 回归验证必须覆盖至少一个带参数查询、一个 mutation、一个分页响应、一个行情元数据响应和一个回放空状态。
+      2: 回归测试名称或测试注释必须引用对应的完整 ACID，便于从实现追溯规格。
+
+constraints:
+  SCOPE:
+    description: 本特性只处理 API 类型契约及其直接级联诊断，不改变交易策略、行情算法或 AI 规则；允许补齐已有 Demo 日志写入界面的本地持久化，以保持现有日志流程可用。
+    requirements:
+      1: 实施顺序必须先建立共享 API 接口和响应类型，再对齐 Demo 实现与查询层，最后处理局部组件和回放空值错误。
+      1-1: 每次调整共享契约后必须重新检查直接调用方，不能只修复首个 TypeScript 诊断而留下同类动态兜底。
+      2: 不得把当前诊断数量或未提交代码归因于某个历史作者；实施记录只陈述可由基线和当前代码验证的事实。
+
+  COMPATIBILITY:
+    description: 类型修复必须保留现有 Demo 运行时边界和用户可见行为。
+    requirements:
+      1: 现有已实现 Demo 方法的响应字段和空数据语义只能在接口与调用方同步调整后改变。
+      2: 不支持的 API 不得通过 null 或 no-op Promise 被静默视为成功。

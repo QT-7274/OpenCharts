@@ -1,4 +1,5 @@
 import { request } from "./request";
+import { z } from "zod";
 
 export interface MarketDataSymbol {
   id: string;
@@ -23,27 +24,30 @@ export interface MarketDataSymbol {
   [key: string]: unknown;
 }
 
-export interface MarketDataCandle {
-  time: number;
-  timestamp: number | string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-  isClosed?: boolean;
-}
+export const MarketDataCandleSchema = z.object({
+  time: z.number(),
+  timestamp: z.union([z.number(), z.string()]),
+  open: z.number(),
+  high: z.number(),
+  low: z.number(),
+  close: z.number(),
+  volume: z.number(),
+  isClosed: z.boolean().optional(),
+});
+export type MarketDataCandle = z.infer<typeof MarketDataCandleSchema>;
 
-export interface MarketDataCandleMetadata {
-  historicalCoverageStart: number | null;
-  isPartial: boolean;
-  backfillQueued: boolean;
-}
+export const MarketDataCandleMetadataSchema = z.object({
+  historicalCoverageStart: z.number().nullable(),
+  isPartial: z.boolean(),
+  backfillQueued: z.boolean(),
+});
+export type MarketDataCandleMetadata = z.infer<typeof MarketDataCandleMetadataSchema>;
 
-export interface MarketDataCandlesPayload {
-  candles: MarketDataCandle[];
-  metadata: MarketDataCandleMetadata;
-}
+export const MarketDataCandlesPayloadSchema = z.object({
+  candles: z.array(MarketDataCandleSchema),
+  metadata: MarketDataCandleMetadataSchema,
+});
+export type MarketDataCandlesPayload = z.infer<typeof MarketDataCandlesPayloadSchema>;
 
 export interface MarketDataTick {
   symbol: string;

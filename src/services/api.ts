@@ -2,12 +2,11 @@
  * Demo API facade.
  *
  * OpenCharts runs without a backend: all real data the terminal needs is served
- * by the in-browser demo layer (services/demo). `api` is the demo implementation
- * wrapped in a Proxy whose fallback returns a benign async no-op for any method
- * not implemented in demo mode — so leftover calls from non-terminal code resolve
- * harmlessly instead of throwing network errors.
+ * by the in-browser demo layer (services/demo). The facade has an explicit
+ * contract so unsupported capabilities fail loudly instead of becoming null.
  */
-import { demoApi } from "./demo/api.ts";
+import { demoApi, unsupportedDemoApi } from "./demo/api.ts";
+import type { OpenChartsApi, UnsupportedDemoApi } from "./api/contract.ts";
 
 export const API_BASE = "";
 
@@ -20,12 +19,6 @@ export class ApiError extends Error {
   }
 }
 
-// react-query rejects `undefined` query results, so resolve to null instead.
-const benign = () => Promise.resolve(null);
-
-export const api = new Proxy(demoApi as Record<string, unknown>, {
-  get(target, prop: string) {
-    if (prop in target) return target[prop];
-    return benign;
-  },
-}) as typeof demoApi & Record<string, (...args: never[]) => Promise<unknown>>;
+// api-type-contract-repair.API_CONTRACT.1 api-type-contract-repair.API_CONTRACT.2
+export const api: OpenChartsApi = demoApi;
+export const unsupportedApi: UnsupportedDemoApi = unsupportedDemoApi;

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { cn, formatCurrency, formatNumber, formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { BookOpen, Star, Pencil, Trash2, Plus } from "lucide-react";
+import type { JournalEntry } from "../../services/api/journal.ts";
 
 const EMOTIONS = [
   "Calm",
@@ -13,22 +14,6 @@ const EMOTIONS = [
   "Revenge",
   "Bored",
 ] as const;
-
-interface JournalEntry {
-  id: string;
-  accountId: string;
-  positionId?: string | null;
-  symbolName?: string | null;
-  side?: string | null;
-  entryPrice?: number | null;
-  exitPrice?: number | null;
-  pnl?: number | null;
-  emotion?: string | null;
-  rating?: number | null;
-  tags: string[];
-  notes: string;
-  createdAt: string;
-}
 
 interface TradeJournalPanelProps {
   entries: JournalEntry[];

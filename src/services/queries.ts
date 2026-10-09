@@ -1,8 +1,10 @@
 import { useQuery, useMutation, useQueryClient, type UseQueryOptions } from "@tanstack/react-query";
-import { api } from "./api";
+import { z } from "zod";
+import { api, unsupportedApi } from "./api";
+import { JsonObjectSchema, type JsonObject } from "./api/contract";
 import type { AllPayoutsResponse } from "./api/accounts";
 import type { JournalEntriesResponse } from "./api/journal";
-import type { MarketDataCandlesPayload } from "./api/market-data";
+import type { EconomicEvent, MarketDataCandlesPayload } from "./api/market-data";
 import type { PnlCalendarResponse } from "@propsim/types";
 import type {
   Account,
@@ -206,7 +208,7 @@ export function useFillQuality(accountId: string | null) {
 export function useAllPayouts() {
   return useQuery<AllPayoutsResponse>({
     queryKey: ["allPayouts"],
-    queryFn: () => api.getAllPayouts(),
+    queryFn: () => unsupportedApi.getAllPayouts(),
     staleTime: 15_000,
     refetchInterval: 30_000,
   });
@@ -221,20 +223,11 @@ export function useSymbols() {
   });
 }
 
-export interface EconomicCalendarEvent {
-  id: string;
-  time: string;
-  currency: string;
-  impact: "low" | "medium" | "high";
-  event: string;
-  forecast?: string;
-  previous?: string;
-  actual?: string;
-  country: string;
-}
+export type EconomicCalendarEvent = EconomicEvent;
 
+// api-type-contract-repair.QUERY_LAYER.1-1
 export function useEconomicCalendar(currencies: string[]) {
-  return useQuery<EconomicCalendarEvent[]>({
+  return useQuery<EconomicEvent[]>({
     queryKey: queryKeys.market.economicCalendar(currencies),
     queryFn: async () => {
       const now = new Date();
@@ -242,12 +235,11 @@ export function useEconomicCalendar(currencies: string[]) {
       from.setDate(from.getDate() - 14);
       const to = new Date(now);
       to.setDate(to.getDate() + 14);
-      const res = await api.getEconomicCalendar(
+      return api.getEconomicCalendar(
         currencies,
         from.toISOString().split("T")[0],
         to.toISOString().split("T")[0],
       );
-      return res as EconomicCalendarEvent[];
     },
     enabled: currencies.length > 0,
     staleTime: 10 * 60_000, // refresh every 10min
@@ -311,7 +303,7 @@ export function useChangePassword() {
     }: {
       currentPassword: string;
       newPassword: string;
-    }) => api.changePassword(currentPassword, newPassword),
+    }) => unsupportedApi.changePassword(currentPassword, newPassword),
   });
 }
 
@@ -417,7 +409,7 @@ export function useCloseAllPositions() {
 export function useLeaderboard(period?: string) {
   return useQuery({
     queryKey: ["leaderboard", period],
-    queryFn: () => api.getLeaderboard(period),
+    queryFn: () => unsupportedApi.getLeaderboard(period),
     staleTime: 30_000,
   });
 }
@@ -425,7 +417,7 @@ export function useLeaderboard(period?: string) {
 export function useFirmLeaderboard(period?: string) {
   return useQuery({
     queryKey: ["firm-leaderboard", period],
-    queryFn: () => api.getFirmLeaderboard(period),
+    queryFn: () => unsupportedApi.getFirmLeaderboard(period),
     staleTime: 30_000,
   });
 }
@@ -433,7 +425,7 @@ export function useFirmLeaderboard(period?: string) {
 export function useLeaderboardStats(period?: string) {
   return useQuery({
     queryKey: ["leaderboard-stats", period],
-    queryFn: () => api.getLeaderboardStats(period),
+    queryFn: () => unsupportedApi.getLeaderboardStats(period),
     staleTime: 30_000,
   });
 }
@@ -441,7 +433,7 @@ export function useLeaderboardStats(period?: string) {
 export function useLeaderboardPrizes() {
   return useQuery({
     queryKey: ["leaderboard-prizes"],
-    queryFn: () => api.getLeaderboardPrizes(),
+    queryFn: () => unsupportedApi.getLeaderboardPrizes(),
     staleTime: 60_000,
   });
 }
@@ -449,7 +441,7 @@ export function useLeaderboardPrizes() {
 export function useMyLeaderboardRank(period?: string) {
   return useQuery({
     queryKey: ["my-leaderboard-rank", period],
-    queryFn: () => api.getMyLeaderboardRank(period),
+    queryFn: () => unsupportedApi.getMyLeaderboardRank(period),
     staleTime: 15_000,
   });
 }
@@ -457,7 +449,7 @@ export function useMyLeaderboardRank(period?: string) {
 export function useMyAwards() {
   return useQuery({
     queryKey: ["my-awards"],
-    queryFn: () => api.getMyAwards(),
+    queryFn: () => unsupportedApi.getMyAwards(),
     staleTime: 30_000,
   });
 }
@@ -466,7 +458,7 @@ export function useMyAwards() {
 export function useActiveCompetitions() {
   return useQuery({
     queryKey: ["active-competitions"],
-    queryFn: () => api.getActiveCompetitions(),
+    queryFn: () => unsupportedApi.getActiveCompetitions(),
     staleTime: 30_000,
   });
 }
@@ -474,7 +466,7 @@ export function useActiveCompetitions() {
 export function useMyCompetitionEntries() {
   return useQuery({
     queryKey: ["my-competition-entries"],
-    queryFn: () => api.getMyCompetitionEntries(),
+    queryFn: () => unsupportedApi.getMyCompetitionEntries(),
     staleTime: 30_000,
   });
 }
@@ -482,7 +474,7 @@ export function useMyCompetitionEntries() {
 export function useCompetitionRankings(competitionId: string | undefined, limit?: number) {
   return useQuery({
     queryKey: ["competition-rankings", competitionId, limit],
-    queryFn: () => api.getCompetitionRankings(competitionId!, limit),
+    queryFn: () => unsupportedApi.getCompetitionRankings(competitionId!, limit),
     enabled: !!competitionId,
     staleTime: 30_000,
   });
@@ -491,7 +483,7 @@ export function useCompetitionRankings(competitionId: string | undefined, limit?
 export function useEnrollInCompetition() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (competitionId: string) => api.enrollInCompetition(competitionId),
+    mutationFn: (competitionId: string) => unsupportedApi.enrollInCompetition(competitionId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["active-competitions"] });
       qc.invalidateQueries({ queryKey: ["my-competition-entries"] });
@@ -504,7 +496,7 @@ export function useEnrollInCompetition() {
 export function useMyCertificates() {
   return useQuery({
     queryKey: ["my-certificates"],
-    queryFn: () => api.getMyCertificates(),
+    queryFn: () => unsupportedApi.getMyCertificates(),
     staleTime: 60_000,
   });
 }
@@ -513,7 +505,7 @@ export function useMyCertificates() {
 export function useMyTickets() {
   return useQuery({
     queryKey: ["my-tickets"],
-    queryFn: () => api.getMyTickets(),
+    queryFn: () => unsupportedApi.getMyTickets(),
     staleTime: 10_000,
   });
 }
@@ -521,7 +513,7 @@ export function useMyTickets() {
 export function useTicketDetail(id: string | null) {
   return useQuery({
     queryKey: ["ticket", id],
-    queryFn: () => api.getTicket(id!),
+    queryFn: () => unsupportedApi.getTicket(id!),
     enabled: !!id,
     staleTime: 5_000,
   });
@@ -536,7 +528,7 @@ export function useCreateTicket() {
       category?: string;
       priority?: string;
       accountId?: string | null;
-    }) => api.createTicket(data),
+    }) => unsupportedApi.createTicket(data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["my-tickets"] }),
   });
 }
@@ -552,7 +544,7 @@ export function useReplyToTicket() {
       id: string;
       message: string;
       attachments?: string[];
-    }) => api.replyToTicket(id, message, attachments),
+    }) => unsupportedApi.replyToTicket(id, message, attachments),
     onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ["ticket", v.id] }),
   });
 }
@@ -560,7 +552,7 @@ export function useReplyToTicket() {
 export function useCloseTicket() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.closeTicket(id),
+    mutationFn: (id: string) => unsupportedApi.closeTicket(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["my-tickets"] }),
   });
 }
@@ -568,7 +560,7 @@ export function useCloseTicket() {
 // ── Coupon ──
 export function useValidateCoupon() {
   return useMutation({
-    mutationFn: (code: string) => api.validateCoupon(code),
+    mutationFn: (code: string) => unsupportedApi.validateCoupon(code),
   });
 }
 
@@ -597,14 +589,8 @@ export function useUpdateJournalEntry() {
     mutationFn: ({
       id,
       ...data
-    }: {
-      id: string;
-      accountId: string;
-      emotion?: string;
-      rating?: number;
-      tags?: string[];
-      notes?: string;
-    }) => api.updateJournalEntry(id, data),
+    }: { id: string; accountId: string } & Parameters<typeof api.updateJournalEntry>[1]) =>
+      api.updateJournalEntry(id, data),
     onSuccess: (_d, vars) => qc.invalidateQueries({ queryKey: ["journal", vars.accountId] }),
   });
 }
@@ -625,7 +611,7 @@ export function useAnalyticsSnapshots(
   return useQuery({
     queryKey: ["analytics", "snapshots", accountId, opts] as const,
     queryFn: () =>
-      api.getAnalyticsSnapshots({
+      unsupportedApi.getAnalyticsSnapshots({
         accountId: accountId || undefined,
         ...opts,
       }),
@@ -637,7 +623,7 @@ export function useAnalyticsSnapshots(
 export function useAnalyticsAggregate(accountId: string | null) {
   return useQuery({
     queryKey: ["analytics", "aggregate", accountId] as const,
-    queryFn: () => api.getAnalyticsAggregate(accountId || undefined),
+    queryFn: () => unsupportedApi.getAnalyticsAggregate(accountId || undefined),
     enabled: !!accountId,
     staleTime: 30_000,
   });
@@ -647,7 +633,7 @@ export function useAnalyticsAggregate(accountId: string | null) {
 export function usePatternDetection(accountId: string | null, lookbackDays?: number) {
   return useQuery({
     queryKey: ["patterns", accountId, lookbackDays] as const,
-    queryFn: () => api.getPatterns(accountId!, lookbackDays),
+    queryFn: () => unsupportedApi.getPatterns(accountId!, lookbackDays),
     enabled: !!accountId,
     staleTime: 60_000,
   });
@@ -669,7 +655,7 @@ export function useModifyOrder() {
         takeProfit?: number | null;
         stopLoss?: number | null;
       };
-    }) => api.modifyOrder(orderId, modifications),
+    }) => unsupportedApi.modifyOrder(orderId, modifications),
     onSuccess: (_d, vars) => {
       qc.invalidateQueries({
         queryKey: queryKeys.trading.orders(vars.accountId),
@@ -683,21 +669,34 @@ export function useModifyOrder() {
 // a real firm's cached branding.
 const FIRM_CACHE_KEY = `propsim:firm-cache:v2:${typeof window !== "undefined" ? window.location.hostname : "ssr"}`;
 
-type CachedFirm = { data: unknown; cachedAt: number };
+const CachedFirmSchema = z.object({
+  data: JsonObjectSchema,
+  cachedAt: z.number(),
+});
 
-function readCachedFirm(): unknown | undefined {
-  if (typeof window === "undefined") return undefined;
+type CachedFirm = z.infer<typeof CachedFirmSchema>;
+
+export function parseCachedFirm(raw: string): JsonObject | undefined {
   try {
-    const raw = window.localStorage.getItem(FIRM_CACHE_KEY);
-    if (!raw) return undefined;
-    const parsed = JSON.parse(raw) as CachedFirm;
-    return parsed?.data;
+    const parsed = CachedFirmSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data.data : undefined;
   } catch {
     return undefined;
   }
 }
 
-function writeCachedFirm(data: unknown): void {
+function readCachedFirm(): JsonObject | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    const raw = window.localStorage.getItem(FIRM_CACHE_KEY);
+    if (!raw) return undefined;
+    return parseCachedFirm(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+function writeCachedFirm(data: JsonObject): void {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(
@@ -713,14 +712,14 @@ export function useMyFirm() {
   return useQuery({
     queryKey: ["my-firm"],
     queryFn: async () => {
-      const fresh = await api.getMyFirm();
+      const fresh = await unsupportedApi.getMyFirm();
       writeCachedFirm(fresh);
       return fresh;
     },
     staleTime: 300_000,
     gcTime: Infinity,
     // Lazy: only read localStorage once per QueryClient cache miss, not every render.
-    initialData: () => readCachedFirm() as Awaited<ReturnType<typeof api.getMyFirm>> | undefined,
+    initialData: readCachedFirm,
     // Treat hydrated cache as stale so we refetch in the background on mount.
     initialDataUpdatedAt: 0,
   });
@@ -750,7 +749,7 @@ export function useAiTraderEnabled() {
 export function useAiTraderHistory(accountId: string | null) {
   return useQuery({
     queryKey: ["ai-trader", "history", accountId] as const,
-    queryFn: () => api.getAiTraderHistory(accountId!),
+    queryFn: () => unsupportedApi.getAiTraderHistory(accountId!),
     enabled: !!accountId,
     staleTime: 30_000,
   });
@@ -768,7 +767,7 @@ export function useCreateAiTraderPlan() {
         deterministicMode?: boolean;
         readOnlyMode?: boolean;
       };
-    }) => api.createAiTraderPlan(data),
+    }) => unsupportedApi.createAiTraderPlan(data),
     onSuccess: (result, vars) => {
       qc.invalidateQueries({
         queryKey: ["ai-trader", "history", vars.accountId],
@@ -793,7 +792,7 @@ export function useExecuteAiTraderPlan() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: { planId: string; accountId: string; confirm: true }) =>
-      api.executeAiTraderPlan(data),
+      unsupportedApi.executeAiTraderPlan(data),
     onSuccess: (_d, vars) => {
       qc.invalidateQueries({
         queryKey: ["ai-trader", "history", vars.accountId],
@@ -814,7 +813,7 @@ export function useExecuteAiTraderPlan() {
 export function useClearAiTraderHistory() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (accountId: string) => api.clearAiTraderHistory(accountId),
+    mutationFn: (accountId: string) => unsupportedApi.clearAiTraderHistory(accountId),
     onSuccess: (_d, accountId) =>
       qc.invalidateQueries({ queryKey: ["ai-trader", "history", accountId] }),
   });
@@ -825,7 +824,7 @@ export function useClearAiTraderHistory() {
 export function useBotActivityLogs(limit = 50) {
   return useQuery({
     queryKey: ["bot-activity", "logs"],
-    queryFn: () => api.getBotActivityLogs(limit),
+    queryFn: () => unsupportedApi.getBotActivityLogs(limit),
     refetchInterval: 10_000, // Auto-refresh every 10s
     staleTime: 5_000,
   });
@@ -834,7 +833,7 @@ export function useBotActivityLogs(limit = 50) {
 export function useBotStatus() {
   return useQuery({
     queryKey: ["bot-activity", "status"],
-    queryFn: () => api.getBotStatus(),
+    queryFn: () => unsupportedApi.getBotStatus(),
     refetchInterval: 10_000,
     staleTime: 5_000,
   });
@@ -843,7 +842,7 @@ export function useBotStatus() {
 export function useConnectBot() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.connectBot(),
+    mutationFn: () => unsupportedApi.connectBot(),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["bot-activity"] });
     },
@@ -853,7 +852,7 @@ export function useConnectBot() {
 export function useDisconnectBot() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.disconnectBot(),
+    mutationFn: () => unsupportedApi.disconnectBot(),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["bot-activity"] });
     },
@@ -865,7 +864,7 @@ export function useDisconnectBot() {
 export function useVapidPublicKey() {
   return useQuery({
     queryKey: ["push", "vapid-key"],
-    queryFn: () => api.getVapidPublicKey(),
+    queryFn: () => unsupportedApi.getVapidPublicKey(),
     staleTime: Infinity,
   });
 }
@@ -873,7 +872,7 @@ export function useVapidPublicKey() {
 export function usePushSubscriptions() {
   return useQuery({
     queryKey: ["push", "subscriptions"],
-    queryFn: () => api.getPushSubscriptions(),
+    queryFn: () => unsupportedApi.getPushSubscriptions(),
   });
 }
 
@@ -881,7 +880,7 @@ export function useSubscribePush() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (sub: { endpoint: string; keys: { p256dh: string; auth: string } }) =>
-      api.subscribePush(sub),
+      unsupportedApi.subscribePush(sub),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["push", "subscriptions"] }),
   });
 }
@@ -889,14 +888,14 @@ export function useSubscribePush() {
 export function useUnsubscribePush() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (endpoint: string) => api.unsubscribePush(endpoint),
+    mutationFn: (endpoint: string) => unsupportedApi.unsubscribePush(endpoint),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["push", "subscriptions"] }),
   });
 }
 
 export function useSendTestNotification() {
   return useMutation({
-    mutationFn: () => api.sendTestNotification(),
+    mutationFn: () => unsupportedApi.sendTestNotification(),
   });
 }
 
@@ -905,7 +904,7 @@ export function useSendTestNotification() {
 export function useBotIntegrations() {
   return useQuery({
     queryKey: ["features", "bot-integrations"],
-    queryFn: () => api.getBotIntegrations(),
+    queryFn: () => unsupportedApi.getBotIntegrations(),
   });
 }
 
@@ -917,7 +916,7 @@ export function useCreateBotIntegration() {
       webhookUrl: string;
       chatId?: string;
       events: string[];
-    }) => api.createBotIntegration(data),
+    }) => unsupportedApi.createBotIntegration(data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["features", "bot-integrations"] }),
   });
 }
@@ -933,7 +932,7 @@ export function useUpdateBotIntegration() {
       chatId: string;
       events: string[];
       isActive: boolean;
-    }>) => api.updateBotIntegration(id, data),
+    }>) => unsupportedApi.updateBotIntegration(id, data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["features", "bot-integrations"] }),
   });
 }
@@ -941,14 +940,14 @@ export function useUpdateBotIntegration() {
 export function useDeleteBotIntegration() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.deleteBotIntegration(id),
+    mutationFn: (id: string) => unsupportedApi.deleteBotIntegration(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["features", "bot-integrations"] }),
   });
 }
 
 export function useTestBotIntegration() {
   return useMutation({
-    mutationFn: (platform: string) => api.testBotIntegration(platform),
+    mutationFn: (platform: string) => unsupportedApi.testBotIntegration(platform),
   });
 }
 
@@ -972,7 +971,7 @@ export function useUpdateProfile() {
       showStats?: boolean;
       showEquityCurve?: boolean;
       socialLinks?: Record<string, string>;
-    }) => api.updateProfile(data),
+    }) => unsupportedApi.updateProfile(data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["features", "my-profile"] }),
   });
 }
@@ -980,14 +979,14 @@ export function useUpdateProfile() {
 export function usePublicProfiles(page?: number) {
   return useQuery({
     queryKey: ["features", "public-profiles", page],
-    queryFn: () => api.getPublicProfiles(page),
+    queryFn: () => unsupportedApi.getPublicProfiles(page),
   });
 }
 
 export function usePublicProfile(userId: string) {
   return useQuery({
     queryKey: ["features", "public-profile", userId],
-    queryFn: () => api.getPublicProfile(userId),
+    queryFn: () => unsupportedApi.getPublicProfile(userId),
     enabled: !!userId,
   });
 }
@@ -997,7 +996,7 @@ export function usePublicProfile(userId: string) {
 export function useScalingPlans() {
   return useQuery({
     queryKey: ["features", "scaling-plans"],
-    queryFn: () => api.getScalingPlans(),
+    queryFn: () => unsupportedApi.getScalingPlans(),
   });
 }
 
@@ -1014,7 +1013,7 @@ export function useCreateScalingPlan() {
         label: string;
       }>;
       isDefault?: boolean;
-    }) => api.createScalingPlan(data),
+    }) => unsupportedApi.createScalingPlan(data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["features", "scaling-plans"] }),
   });
 }
@@ -1022,7 +1021,7 @@ export function useCreateScalingPlan() {
 export function useScalingProgress(accountId: string) {
   return useQuery({
     queryKey: ["features", "scaling-progress", accountId],
-    queryFn: () => api.getScalingProgress(accountId),
+    queryFn: () => unsupportedApi.getScalingProgress(accountId),
     enabled: !!accountId,
   });
 }
@@ -1031,7 +1030,7 @@ export function useEnrollScaling() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: { accountId: string; scalingPlanId: string }) =>
-      api.enrollScaling(data.accountId, data.scalingPlanId),
+      unsupportedApi.enrollScaling(data.accountId, data.scalingPlanId),
     onSuccess: (_d, vars) =>
       qc.invalidateQueries({ queryKey: ["features", "scaling-progress", vars.accountId] }),
   });
@@ -1042,7 +1041,7 @@ export function useEnrollScaling() {
 export function useProfitSplitConfig() {
   return useQuery({
     queryKey: ["features", "profit-split-config"],
-    queryFn: () => api.getProfitSplitConfig(),
+    queryFn: () => unsupportedApi.getProfitSplitConfig(),
   });
 }
 
@@ -1050,7 +1049,7 @@ export function useUpdateProfitSplitConfig() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (tiers: Array<{ minPayouts: number; splitPercent: number; label: string }>) =>
-      api.updateProfitSplitConfig(tiers),
+      unsupportedApi.updateProfitSplitConfig(tiers),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["features", "profit-split-config"] }),
   });
 }
@@ -1058,7 +1057,7 @@ export function useUpdateProfitSplitConfig() {
 export function useMyProfitSplit() {
   return useQuery({
     queryKey: ["features", "my-profit-split"],
-    queryFn: () => api.getMyProfitSplit(),
+    queryFn: () => unsupportedApi.getMyProfitSplit(),
   });
 }
 
@@ -1068,7 +1067,7 @@ export function useRequestAccountMerge() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: { sourceAccountId: string; targetAccountId: string; reason?: string }) =>
-      api.requestAccountMerge(data),
+      unsupportedApi.requestAccountMerge(data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["features", "merge-requests"] }),
   });
 }
@@ -1076,7 +1075,7 @@ export function useRequestAccountMerge() {
 export function useMergeRequests() {
   return useQuery({
     queryKey: ["features", "merge-requests"],
-    queryFn: () => api.getMergeRequests(),
+    queryFn: () => unsupportedApi.getMergeRequests(),
   });
 }
 
@@ -1084,7 +1083,7 @@ export function useProcessMergeRequest() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: { id: string; status: "APPROVED" | "REJECTED"; adminNotes?: string }) =>
-      api.processMergeRequest(data.id, data.status, data.adminNotes),
+      unsupportedApi.processMergeRequest(data.id, data.status, data.adminNotes),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["features", "merge-requests"] }),
   });
 }
@@ -1110,7 +1109,7 @@ export function useDailyPnl(
 ): ReturnType<typeof useQuery<PnlCalendarResponse>> {
   return useQuery<PnlCalendarResponse>({
     queryKey: ["daily-pnl", accountIds.slice().sort().join(","), from, to],
-    queryFn: () => api.getDailyPnl(accountIds, from, to),
+    queryFn: () => unsupportedApi.getDailyPnl(accountIds, from, to),
     enabled: accountIds.length > 0 && !!from && !!to,
     staleTime: 60_000,
   });
@@ -1138,7 +1137,7 @@ export function useAnnouncementsUnreadCount() {
 export function useMarkAnnouncementRead() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.markAnnouncementRead(id),
+    mutationFn: (id: string) => unsupportedApi.markAnnouncementRead(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["announcements"] });
     },
@@ -1148,7 +1147,7 @@ export function useMarkAnnouncementRead() {
 export function useMarkAllAnnouncementsRead() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.markAllAnnouncementsRead(),
+    mutationFn: () => unsupportedApi.markAllAnnouncementsRead(),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["announcements"] });
     },

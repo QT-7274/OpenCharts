@@ -1,26 +1,29 @@
 import { request } from "./request";
+import { z } from "zod";
 
-export interface JournalEntry {
-  id: string;
-  accountId: string;
-  positionId?: string | null;
-  symbolName?: string | null;
-  side?: "BUY" | "SELL" | string | null;
-  entryPrice?: number | null;
-  exitPrice?: number | null;
-  pnl?: number | null;
-  emotion?: string | null;
-  setupType?: string | null;
-  rating?: number | null;
-  tags: string[];
-  notes: string;
-  createdAt: string;
-}
+export const JournalEntrySchema = z.object({
+  id: z.string(),
+  accountId: z.string(),
+  positionId: z.string().nullable().optional(),
+  symbolName: z.string().nullable().optional(),
+  side: z.string().nullable().optional(),
+  entryPrice: z.number().nullable().optional(),
+  exitPrice: z.number().nullable().optional(),
+  pnl: z.number().nullable().optional(),
+  emotion: z.string().nullable().optional(),
+  setupType: z.string().nullable().optional(),
+  rating: z.number().nullable().optional(),
+  tags: z.array(z.string()),
+  notes: z.string(),
+  createdAt: z.string(),
+});
+export type JournalEntry = z.infer<typeof JournalEntrySchema>;
 
-export interface JournalEntriesResponse {
-  entries: JournalEntry[];
-  total: number;
-}
+export const JournalEntriesResponseSchema = z.object({
+  entries: z.array(JournalEntrySchema),
+  total: z.number(),
+});
+export type JournalEntriesResponse = z.infer<typeof JournalEntriesResponseSchema>;
 
 export interface CreateJournalEntryInput {
   accountId: string;
@@ -63,20 +66,22 @@ export const journalApi = {
     if (opts?.limit) params.set("limit", String(opts.limit));
     if (opts?.offset) params.set("offset", String(opts.offset));
     if (opts?.symbol) params.set("symbol", opts.symbol);
-    return request<JournalEntriesResponse>(`/trading/journal?${params.toString()}`);
+    return request<unknown>(`/trading/journal?${params.toString()}`).then((response) =>
+      JournalEntriesResponseSchema.parse(response),
+    );
   },
 
   createJournalEntry: (data: CreateJournalEntryInput) =>
-    request<JournalEntry>("/trading/journal", {
+    request<unknown>("/trading/journal", {
       method: "POST",
       body: JSON.stringify(data),
-    }),
+    }).then((response) => JournalEntrySchema.parse(response)),
 
   updateJournalEntry: (id: string, data: UpdateJournalEntryInput) =>
-    request<JournalEntry>(`/trading/journal/${id}`, {
+    request<unknown>(`/trading/journal/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
-    }),
+    }).then((response) => JournalEntrySchema.parse(response)),
 
   deleteJournalEntry: (id: string) => request<void>(`/trading/journal/${id}`, { method: "DELETE" }),
 

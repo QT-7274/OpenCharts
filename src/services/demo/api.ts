@@ -1,5 +1,42 @@
 import type { DrawingLine } from "../../pages/trading/constants.ts";
-import type { Candle } from "../schemas.ts";
+import { ReplaySessionResponseSchema } from "../api/contract.ts";
+import { MarketDataCandlesPayloadSchema } from "../api/market-data.ts";
+import {
+  JournalEntriesResponseSchema,
+  JournalEntrySchema,
+} from "../api/journal.ts";
+import type {
+  CreateJournalEntryInput,
+  JournalEntry,
+  UpdateJournalEntryInput,
+} from "../api/journal.ts";
+import type {
+  AccountStats,
+  Candle,
+  PlaceOrderInput,
+  RegisterInput,
+} from "../schemas.ts";
+import {
+  AccountSchema,
+  AccountStatsSchema,
+  CandleSchema,
+  ClosedPositionSchema,
+  FillSchema,
+  OrderSchema,
+  PositionSchema,
+  SymbolSchema,
+} from "../schemas.ts";
+import type {
+  Announcement,
+  ClosedPositionsSummary,
+  FillQualityResponse,
+  MarketDataHealthResponse,
+  OpenChartsApi,
+  OrderModification,
+  ReplaySessionData,
+  UnsupportedDemoApi,
+} from "../api/contract.ts";
+import { unsupported } from "../api/errors.ts";
 import { browserMarketDataApi, marketDataMode } from "../market-data/runtime.ts";
 import { getHistory } from "./candles.ts";
 import * as engine from "./engine.ts";
@@ -9,7 +46,8 @@ import { DEMO_SYMBOLS } from "./instruments.ts";
  * Demo-mode API. Replaces the HTTP client for everything the terminal needs:
  * trading actions hit the in-browser paper engine, market data comes from the
  * bundled real OHLC, and chart drawings persist to localStorage. Methods not
- * implemented here fall through to a benign stub (see services/api.ts).
+ * implemented here are explicitly rejected below so callers can distinguish
+ * unavailable demo capabilities from successful empty responses.
  */
 
 const DEMO_USER = {
@@ -60,29 +98,103 @@ const chartDrawings = {
   },
 };
 
-const candlesMeta = (candles: Candle[]) => ({
-  candles,
+const DEMO_JOURNAL_KEY = `opencharts-demo-journal-v1:${DEMO_USER.id}`;
+
+function readDemoJournalEntries(): JournalEntry[] {
+  const stored = localStorage.getItem(DEMO_JOURNAL_KEY);
+  if (!stored) return [];
+
+  try {
+    return JournalEntrySchema.array().parse(JSON.parse(stored));
+  } catch (error) {
+    const backupKey = `${DEMO_JOURNAL_KEY}:invalid:${Date.now()}`;
+    localStorage.setItem(backupKey, stored);
+    localStorage.removeItem(DEMO_JOURNAL_KEY);
+    console.error("Invalid Demo journal data was backed up", error);
+    return [];
+  }
+}
+
+function writeDemoJournalEntries(entries: JournalEntry[]): void {
+  localStorage.setItem(DEMO_JOURNAL_KEY, JSON.stringify(JournalEntrySchema.array().parse(entries)));
+}
+
+// api-type-contract-repair.RUNTIME_COMPATIBILITY.1
+const demoJournalApi = {
+  getJournalEntries: async (
+    accountId: string,
+    opts?: { limit?: number; offset?: number; symbol?: string },
+  ) => {
+    let entries = readDemoJournalEntries();
+    if (opts?.symbol) {
+      entries = entries.filter(
+        (entry) => entry.symbolName?.toUpperCase() === opts.symbol?.toUpperCase(),
+      );
+    }
+    entries.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    const offset = Math.max(0, opts?.offset ?? 0);
+    const end = opts?.limit == null ? undefined : offset + Math.max(0, opts.limit);
+    return JournalEntriesResponseSchema.parse({
+      entries: entries.slice(offset, end).map((entry) => ({ ...entry, accountId })),
+      total: entries.length,
+    });
+  },
+  createJournalEntry: async (data: CreateJournalEntryInput) => {
+    const entry = JournalEntrySchema.parse({
+      ...data,
+      id: crypto.randomUUID(),
+      tags: data.tags ?? [],
+      notes: data.notes ?? "",
+      createdAt: new Date().toISOString(),
+    });
+    writeDemoJournalEntries([...readDemoJournalEntries(), entry]);
+    return entry;
+  },
+  updateJournalEntry: async (id: string, data: UpdateJournalEntryInput) => {
+    const entries = readDemoJournalEntries();
+    const index = entries.findIndex((entry) => entry.id === id);
+    if (index === -1) throw new Error(`Journal entry ${id} was not found`);
+
+    const entry = JournalEntrySchema.parse({ ...entries[index], ...data });
+    entries[index] = entry;
+    writeDemoJournalEntries(entries);
+    return entry;
+  },
+  deleteJournalEntry: async (id: string) => {
+    writeDemoJournalEntries(readDemoJournalEntries().filter((entry) => entry.id !== id));
+  },
+};
+
+// api-type-contract-repair.RUNTIME_COMPATIBILITY.2
+const candlesMeta = (candles: Candle[]): import("../api/market-data.ts").MarketDataCandlesPayload => ({
+  candles: candles.map((candle) => ({
+    ...candle,
+    timestamp: candle.timestamp ?? candle.time,
+  })),
   metadata: { isPartial: false, backfillQueued: false, historicalCoverageStart: null },
 });
 
-export const demoApi = {
+const supportedDemoApi = {
   // ── Auth (no real auth in demo) ──
   login: () => Promise.resolve(authResponse()),
   demoLogin: () => Promise.resolve(authResponse()),
-  register: () => Promise.resolve(authResponse()),
-  completeMfaLogin: () => Promise.resolve(authResponse()),
-  logout: () => Promise.resolve({ success: true }),
-  refreshToken: () => Promise.resolve({ accessToken: "demo-token", refreshToken: "demo-refresh" }),
+  register: (_data: RegisterInput) => Promise.resolve(authResponse()),
+  completeMfaLogin: (_mfaToken: string, _code: string) => Promise.resolve(authResponse()),
+  logout: (_refreshToken?: string) => Promise.resolve({ success: true }),
+  refreshToken: (_refreshToken: string) =>
+    Promise.resolve({ accessToken: "demo-token", refreshToken: "demo-refresh" }),
   getMyProfile: () => Promise.resolve(DEMO_USER),
   getMe: () => Promise.resolve(DEMO_USER),
+  getPreferences: () => Promise.resolve({}),
 
   // ── Accounts ──
-  getMyAccounts: () => Promise.resolve(engine.getAccounts()),
-  getAccount: () => Promise.resolve(engine.getAccount()),
-  getEquityHistory: () => Promise.resolve([]),
-  getLedger: () => Promise.resolve({ data: [], total: 0, page: 1, pageSize: 50, totalPages: 0 }),
-  getAccountStats: () =>
-    Promise.resolve({
+  getMyAccounts: () => Promise.resolve(AccountSchema.array().parse(engine.getAccounts())),
+  getAccount: (_id: string) => Promise.resolve(AccountSchema.parse(engine.getAccount())),
+  getEquityHistory: (_id: string) => Promise.resolve([]),
+  getLedger: (_id: string, page = 1) =>
+    Promise.resolve({ data: [], total: 0, page, pageSize: 50, totalPages: 0 }),
+  getAccountStats: (_id: string): Promise<AccountStats> =>
+    Promise.resolve(AccountStatsSchema.parse({
       totalTrades: 0,
       winRate: 0,
       avgWin: 0,
@@ -90,12 +202,11 @@ export const demoApi = {
       profitFactor: 0,
       bestTrade: 0,
       worstTrade: 0,
-    }),
-  setAccountLabel: () => Promise.resolve({ success: true }),
-  getAccountMetrics: () => {
+    })),
+  getAccountMetrics: (accountId: string) => {
     const a = engine.getAccount();
     return Promise.resolve({
-      accountId: a.id,
+      accountId,
       equity: a.equity,
       balance: a.balance,
       freeMargin: a.freeMargin,
@@ -131,8 +242,8 @@ export const demoApi = {
   // ── Symbols & market data ──
   getSymbols: () =>
     marketDataMode === "binance"
-      ? browserMarketDataApi.getSymbols()
-      : Promise.resolve(DEMO_SYMBOLS),
+      ? browserMarketDataApi.getSymbols().then((symbols) => SymbolSchema.array().parse(symbols))
+      : Promise.resolve(SymbolSchema.array().parse(DEMO_SYMBOLS)),
   getCandles: (
     symbol: string,
     timeframe: string,
@@ -141,16 +252,19 @@ export const demoApi = {
   ) =>
     marketDataMode === "binance"
       ? browserMarketDataApi.getCandles(symbol, timeframe, limit, range)
-      : Promise.resolve(getHistory(symbol, timeframe, limit)),
+          .then((candles) => CandleSchema.array().parse(candles))
+      : Promise.resolve(CandleSchema.array().parse(getHistory(symbol, timeframe, limit))),
   getCandlesWithMeta: (
     symbol: string,
     timeframe: string,
     limit?: number,
     range?: { fromMs: number; toMs: number },
-  ) =>
+  ): Promise<import("../api/market-data.ts").MarketDataCandlesPayload> =>
     marketDataMode === "binance"
       ? browserMarketDataApi.getCandlesWithMeta(symbol, timeframe, limit, range)
-      : Promise.resolve(candlesMeta(getHistory(symbol, timeframe, limit))),
+          .then((payload) => MarketDataCandlesPayloadSchema.parse(payload))
+      : Promise.resolve(candlesMeta(getHistory(symbol, timeframe, limit)))
+          .then((payload) => MarketDataCandlesPayloadSchema.parse(payload)),
   getTick: (symbol: string) => {
     if (marketDataMode === "binance") {
       return browserMarketDataApi.getTick(symbol).then((tick) => {
@@ -161,45 +275,197 @@ export const demoApi = {
     const price = engine.getLastPrice(symbol);
     return Promise.resolve({ symbol, bid: price, ask: price, timestamp: Date.now() });
   },
-  getMarketDataHealth: () =>
+  getMarketDataHealth: (): Promise<MarketDataHealthResponse> =>
     marketDataMode === "binance"
       ? browserMarketDataApi.getMarketDataHealth()
-      : Promise.resolve({ status: "ok" }),
-  getEconomicCalendar: () => Promise.resolve([]),
+      : Promise.resolve({
+          state: "live",
+          serverTimeMs: Date.now(),
+          lastMessageAtMs: Date.now(),
+          lastClosedCandleAtMs: Date.now(),
+          missingRanges: [],
+          adapter: { status: "live" },
+          staleCount: 0,
+          totalSymbols: DEMO_SYMBOLS.length,
+          lastTickAgeMs: 0,
+        }),
+  getEconomicCalendar: (
+    _currencies?: string[],
+    _from?: string,
+    _to?: string,
+  ) => Promise.resolve([]),
 
   // ── Trading (paper engine) ──
-  placeOrder: (data: engine.PlaceOrderArgs) => Promise.resolve(engine.placeOrder(data)),
+  placeOrder: (data: PlaceOrderInput) => Promise.resolve(OrderSchema.parse(engine.placeOrder(data))),
   cancelOrder: (orderId: string) => Promise.resolve(engine.cancelOrder(orderId)),
-  modifyOrder: (orderId: string) => Promise.resolve(engine.getOrders().find((o) => o.id === orderId)),
-  cancelAllOrders: () => Promise.resolve({ success: true }),
-  getOrders: () => Promise.resolve(engine.getOrders()),
-  getPositions: () => Promise.resolve(engine.getPositions()),
+  getOrders: (_accountId: string, _status?: string) =>
+    Promise.resolve(OrderSchema.array().parse(engine.getOrders())),
+  getPositions: (_accountId: string) =>
+    Promise.resolve(PositionSchema.array().parse(engine.getPositions())),
   getOpenPositionCount: () => Promise.resolve(engine.getPositions().length),
   closePosition: (positionId: string, quantity?: number) =>
     Promise.resolve(engine.closePosition(positionId, quantity)),
   closeAllPositions: () => Promise.resolve(engine.closeAllPositions()),
   modifyPosition: (positionId: string, mods: { takeProfit?: number | null; stopLoss?: number | null }) =>
     Promise.resolve(engine.modifyPosition(positionId, mods)),
-  getFills: () => Promise.resolve({ data: engine.getFills(), total: engine.getFills().length, page: 1, pageSize: 50, totalPages: 1 }),
-  getClosedPositions: () =>
-    Promise.resolve({ data: engine.getClosedPositions(), total: engine.getClosedPositions().length, page: 1, pageSize: 50, totalPages: 1 }),
-  getClosedPositionsSummary: () => Promise.resolve({ realizedPnl: 0, trades: 0, wins: 0, losses: 0 }),
-  getFillQuality: () => Promise.resolve([]),
+  getFills: (_accountId: string, page = 1) =>
+    Promise.resolve({
+      data: FillSchema.array().parse(engine.getFills()),
+      total: engine.getFills().length,
+      page,
+      pageSize: 50,
+      totalPages: Math.max(1, Math.ceil(engine.getFills().length / 50)),
+    }),
+  getClosedPositions: (_accountId: string, page = 1) =>
+    Promise.resolve({
+      data: ClosedPositionSchema.array().parse(engine.getClosedPositions()),
+      total: engine.getClosedPositions().length,
+      page,
+      pageSize: 50,
+      totalPages: Math.max(1, Math.ceil(engine.getClosedPositions().length / 50)),
+    }),
+  getClosedPositionsSummary: (
+    _accountId: string,
+    _from: string,
+    _to: string,
+  ): Promise<ClosedPositionsSummary> =>
+    Promise.resolve({ pnl: 0, commission: 0, swap: 0, tradeCount: 0 }),
+  getFillQuality: (_accountId: string): Promise<FillQualityResponse> =>
+    Promise.resolve({ avgScore: null, count: 0, entries: [] }),
 
-  // ── Trade journal (localStorage-free demo: empty) ──
-  getJournalEntries: () => Promise.resolve([]),
-  createJournalEntry: () => Promise.resolve(null),
-  updateJournalEntry: () => Promise.resolve(null),
-  deleteJournalEntry: () => Promise.resolve({ success: true }),
+  // ── Trade journal ──
+  ...demoJournalApi,
 
   // ── Chart persistence ──
   chartDrawings,
-  savePreferences: () => Promise.resolve({ success: true }),
+  savePreferences: (_prefs: Record<string, string>) => Promise.resolve({ success: true }),
 
   // ── Feature gating / misc (terminal reads these on mount) ──
   getFeatureFlags: () => Promise.resolve({}),
-  isAiTraderEnabled: () => Promise.resolve(false),
-  getAnnouncements: () => Promise.resolve([]),
+  isAiTraderEnabled: () => Promise.resolve({ enabled: false }),
+  getAnnouncements: (_page?: number): Promise<Announcement[]> => Promise.resolve([]),
   getAnnouncementsUnreadCount: () => Promise.resolve(0),
-  replayGetSession: () => Promise.resolve(null),
+  replayGetSession: (_accountId: string, _date: string): Promise<ReplaySessionData | null> =>
+    Promise.resolve(ReplaySessionResponseSchema.parse(null)),
+} as const;
+
+export const unsupportedDemoApi: UnsupportedDemoApi = {
+  setAccountLabel: (_id: string, _label: string) => unsupported("setAccountLabel"),
+  cancelAllOrders: (_accountId?: string) => unsupported("cancelAllOrders"),
+  changePassword: (_currentPassword: string, _newPassword: string) => unsupported("changePassword"),
+  getAllPayouts: () => unsupported("getAllPayouts"),
+  modifyOrder: (_orderId: string, _modifications: OrderModification) => unsupported("modifyOrder"),
+  getLeaderboard: (_period?: string) => unsupported("getLeaderboard"),
+  getFirmLeaderboard: (_period?: string) => unsupported("getFirmLeaderboard"),
+  getLeaderboardStats: (_period?: string) => unsupported("getLeaderboardStats"),
+  getLeaderboardPrizes: () => unsupported("getLeaderboardPrizes"),
+  getMyLeaderboardRank: (_period?: string) => unsupported("getMyLeaderboardRank"),
+  getMyAwards: () => unsupported("getMyAwards"),
+  getActiveCompetitions: () => unsupported("getActiveCompetitions"),
+  getMyCompetitionEntries: () => unsupported("getMyCompetitionEntries"),
+  getCompetitionRankings: (_competitionId: string, _limit?: number) =>
+    unsupported("getCompetitionRankings"),
+  enrollInCompetition: (_competitionId: string) => unsupported("enrollInCompetition"),
+  getMyCertificates: () => unsupported("getMyCertificates"),
+  getMyTickets: () => unsupported("getMyTickets"),
+  getTicket: (_id: string) => unsupported("getTicket"),
+  createTicket: (_data: {
+    subject: string;
+    message: string;
+    category?: string;
+    priority?: string;
+    accountId?: string | null;
+  }) => unsupported("createTicket"),
+  replyToTicket: (_id: string, _message: string, _attachments?: string[]) => unsupported("replyToTicket"),
+  closeTicket: (_id: string) => unsupported("closeTicket"),
+  validateCoupon: (_code: string) => unsupported("validateCoupon"),
+  getAnalyticsSnapshots: (_params?: {
+    accountId?: string;
+    startDate?: string;
+    endDate?: string;
+    page?: number;
+    limit?: number;
+  }) => unsupported("getAnalyticsSnapshots"),
+  getAnalyticsAggregate: (_accountId?: string) => unsupported("getAnalyticsAggregate"),
+  getPatterns: (_accountId: string, _lookbackDays?: number) => unsupported("getPatterns"),
+  getDailyPnl: (_accountIds: string[], _from: string, _to: string) => unsupported("getDailyPnl"),
+  getMyFirm: () => unsupported("getMyFirm"),
+  getAiTraderHistory: (_accountId: string) => unsupported("getAiTraderHistory"),
+  createAiTraderPlan: (_data: {
+    accountId: string;
+    message: string;
+    context?: {
+      selectedSymbol?: string;
+      timezone?: string;
+      deterministicMode?: boolean;
+      readOnlyMode?: boolean;
+    };
+  }) => unsupported("createAiTraderPlan"),
+  executeAiTraderPlan: (_data: { planId: string; accountId: string; confirm: true }) =>
+    unsupported("executeAiTraderPlan"),
+  clearAiTraderHistory: (_accountId: string) => unsupported("clearAiTraderHistory"),
+  getBotActivityLogs: (_limit?: number) => unsupported("getBotActivityLogs"),
+  getBotStatus: () => unsupported("getBotStatus"),
+  connectBot: () => unsupported("connectBot"),
+  disconnectBot: () => unsupported("disconnectBot"),
+  getVapidPublicKey: () => unsupported("getVapidPublicKey"),
+  getPushSubscriptions: () => unsupported("getPushSubscriptions"),
+  subscribePush: (_subscription: { endpoint: string; keys: { p256dh: string; auth: string } }) =>
+    unsupported("subscribePush"),
+  unsubscribePush: (_endpoint: string) => unsupported("unsubscribePush"),
+  sendTestNotification: () => unsupported("sendTestNotification"),
+  getBotIntegrations: () => unsupported("getBotIntegrations"),
+  createBotIntegration: (_data: {
+    platform: "discord" | "telegram";
+    webhookUrl: string;
+    chatId?: string;
+    events: string[];
+  }) => unsupported("createBotIntegration"),
+  updateBotIntegration: (
+    _id: string,
+    _data: Partial<{ webhookUrl: string; chatId: string; events: string[]; isActive: boolean }>,
+  ) => unsupported("updateBotIntegration"),
+  deleteBotIntegration: (_id: string) => unsupported("deleteBotIntegration"),
+  testBotIntegration: (_platform: string) => unsupported("testBotIntegration"),
+  updateProfile: (_data: {
+    displayName: string;
+    bio?: string;
+    avatarUrl?: string;
+    isVisible?: boolean;
+    showStats?: boolean;
+    showEquityCurve?: boolean;
+    socialLinks?: Record<string, string>;
+  }) => unsupported("updateProfile"),
+  getPublicProfiles: (_page?: number) => unsupported("getPublicProfiles"),
+  getPublicProfile: (_userId: string) => unsupported("getPublicProfile"),
+  getScalingPlans: () => unsupported("getScalingPlans"),
+  createScalingPlan: (_data: {
+    name: string;
+    description?: string;
+    milestones: Array<{ targetPnl: number; scalePercent: number; minDays: number; label: string }>;
+    isDefault?: boolean;
+  }) => unsupported("createScalingPlan"),
+  getScalingProgress: (_accountId: string) => unsupported("getScalingProgress"),
+  enrollScaling: (_accountId: string, _scalingPlanId: string) => unsupported("enrollScaling"),
+  getProfitSplitConfig: () => unsupported("getProfitSplitConfig"),
+  updateProfitSplitConfig: (
+    _tiers: Array<{ minPayouts: number; splitPercent: number; label: string }>,
+  ) => unsupported("updateProfitSplitConfig"),
+  getMyProfitSplit: () => unsupported("getMyProfitSplit"),
+  requestAccountMerge: (_data: {
+    sourceAccountId: string;
+    targetAccountId: string;
+    reason?: string;
+  }) => unsupported("requestAccountMerge"),
+  getMergeRequests: () => unsupported("getMergeRequests"),
+  processMergeRequest: (
+    _id: string,
+    _status: "APPROVED" | "REJECTED",
+    _adminNotes?: string,
+  ) => unsupported("processMergeRequest"),
+  markAnnouncementRead: (_id: string) => unsupported("markAnnouncementRead"),
+  markAllAnnouncementsRead: () => unsupported("markAllAnnouncementsRead"),
 };
+
+// api-type-contract-repair.API_CONTRACT.2 api-type-contract-repair.API_CONTRACT.2-2
+export const demoApi: OpenChartsApi = supportedDemoApi;
