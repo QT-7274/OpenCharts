@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   TREND_PULLBACK_V1,
   buildIndicatorSnapshot,
+  buildIndicatorSnapshotHistory,
   buildEntryPlan,
   evaluateHourlyConfirmation,
   evaluatePullback,
@@ -63,6 +64,24 @@ function alignedTrendCandles(interval: SpotInterval, count: number, start: numbe
 }
 
 describe("trend-pullback-v1 indicator and trend gate", () => {
+  it("crypto-ai-analysis.VALIDATION.2 crypto-ai-analysis.VALIDATION.14 crypto-ai-analysis.VALIDATION.14-1 keeps historical indicator snapshots causal", () => {
+    const candles = trendCandles("1h", 80, 100, 1);
+    const history = buildIndicatorSnapshotHistory("1h", candles);
+
+    for (let index = 40; index < candles.length; index += 1) {
+      expect(history[index]).toEqual(
+        buildIndicatorSnapshot("1h", candles.slice(0, index + 1)),
+      );
+    }
+
+    const changedFuture = candles.map((candle, index) => index < 50
+      ? candle
+      : { ...candle, open: candle.open * 2, high: candle.high * 2, low: candle.low * 2, close: candle.close * 2 },
+    );
+    expect(buildIndicatorSnapshotHistory("1h", changedFuture).slice(0, 50))
+      .toEqual(history.slice(0, 50));
+  });
+
   it("crypto-ai-analysis.STRATEGY.12 crypto-ai-analysis.STRATEGY.12-1 exposes immutable versioned parameters", () => {
     expect(TREND_PULLBACK_V1).toEqual({
       version: "trend-pullback-v1",

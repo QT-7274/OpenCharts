@@ -16,6 +16,7 @@ import {
   Info,
   Layers,
   Layers3,
+  LineChart,
   type LucideIcon,
   Magnet,
   Maximize2,
@@ -308,6 +309,16 @@ export function ChartToolbar({
         ))}
       </div>
 
+      {/* crypto-ai-analysis.VALIDATION.1 */}
+      <a
+        href="/backtest"
+        title="历史回测"
+        aria-label="历史回测"
+        className="md:hidden inline-flex h-8 w-8 shrink-0 items-center justify-center rounded border border-border text-muted-foreground transition hover:bg-secondary hover:text-foreground"
+      >
+        <LineChart className="h-4 w-4" />
+      </a>
+
       {/* Session replay controls — disabled until the feature is QA'd */}
       {REPLAY_ENABLED && replayAccountId != null && <ReplayHUD accountId={replayAccountId} />}
 
@@ -436,6 +447,10 @@ export function ChartToolbar({
         >
           <Maximize2 className="h-3 w-3" />
         </button>
+        <a href="/backtest" title="历史回测" aria-label="历史回测" className="ml-1 inline-flex h-7 items-center gap-1 border border-white/10 px-2 text-[11px] text-muted-foreground transition hover:border-white/20 hover:text-foreground">
+          <LineChart className="h-3.5 w-3.5" />
+          <span className="hidden xl:inline">回测</span>
+        </a>
       </div>
     </div>
   );

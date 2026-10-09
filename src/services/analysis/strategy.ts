@@ -312,6 +312,8 @@ export interface StrategyEvaluationInput {
   dataComplete?: boolean;
   riskReward?: number | null;
   entryPlanStatus?: EntryPlanStatus | null;
+  pullbackAssessment?: PullbackAssessment;
+  hourlyConfirmation?: HourlyConfirmation;
 }
 
 function assertClosedSeries(interval: SpotInterval, candles: readonly MarketCandle[]): void {
@@ -337,37 +339,13 @@ function toIndicatorCandles(candles: readonly MarketCandle[]): CandleData[] {
   }));
 }
 
-function latestValue(points: readonly IndicatorPoint[]): number | null {
-  return points.at(-1)?.value ?? null;
-}
-
-function valueAtTime(points: readonly IndicatorPoint[], time: number): number | null {
-  return points.find((point) => point.time === time)?.value ?? null;
-}
-
-function valueAtCandleOffset(
-  points: readonly IndicatorPoint[],
-  candles: readonly MarketCandle[],
-  offset: number,
-): number | null {
-  const target = candles.at(-(offset + 1));
-  if (!target) return null;
-  return points.find((point) => point.time === target.openTimeMs)?.value ?? null;
-}
-
-function latestVolumeSma(candles: readonly MarketCandle[], period: number): number | null {
-  if (candles.length < period) return null;
-  return candles.slice(-period).reduce((sum, row) => sum + row.volume, 0) / period;
-}
-
 // crypto-ai-analysis.STRATEGY.2 crypto-ai-analysis.STRATEGY.3 crypto-ai-analysis.STRATEGY.12
-export function buildIndicatorSnapshot(
+export function buildIndicatorSnapshotHistory(
   interval: SpotInterval,
   candles: readonly MarketCandle[],
-): IntervalIndicatorSnapshot | null {
+): Array<IntervalIndicatorSnapshot | null> {
   assertClosedSeries(interval, candles);
-  const latest = candles.at(-1);
-  if (!latest) return null;
+  if (candles.length === 0) return [];
 
   const input = toIndicatorCandles(candles);
   const ema20Points = ema(input, TREND_PULLBACK_V1.emaPeriods.fast);
@@ -382,42 +360,67 @@ export function buildIndicatorSnapshot(
     TREND_PULLBACK_V1.macd.signal,
   ).histogram;
 
-  const ema20 = latestValue(ema20Points);
-  const ema50 = latestValue(ema50Points);
-  const ema20ThreeBarsAgo = valueAtCandleOffset(
-    ema20Points, candles, TREND_PULLBACK_V1.fourHourEmaSlopeLookback,
-  );
-  const atr14 = latestValue(atrPoints);
-  const rsi14 = latestValue(rsiPoints);
-  const previousRsi14 = rsiPoints.at(-2)?.value ?? null;
-  const macdHistogram = latestValue(macdPoints);
-  const previousMacdHistogram = macdPoints.at(-2)?.value ?? null;
-  const volumeSma20 = latestVolumeSma(candles, TREND_PULLBACK_V1.volumeSmaPeriod);
+  const valuesByTime = (points: readonly IndicatorPoint[]) =>
+    new Map(points.map((point) => [point.time, point.value]));
+  const ema20ByTime = valuesByTime(ema20Points);
+  const ema50ByTime = valuesByTime(ema50Points);
+  const ema200ByTime = valuesByTime(ema200Points);
+  const atrByTime = valuesByTime(atrPoints);
+  const rsiByTime = valuesByTime(rsiPoints);
+  const macdByTime = valuesByTime(macdPoints);
+  const volumePeriod = TREND_PULLBACK_V1.volumeSmaPeriod;
+  let volumeSum = 0;
 
-  if (ema20 == null || ema50 == null || ema20ThreeBarsAgo == null || atr14 == null ||
-    rsi14 == null || previousRsi14 == null || macdHistogram == null ||
-    previousMacdHistogram == null || volumeSma20 == null) return null;
+  return candles.map((candle, index) => {
+    volumeSum += candle.volume;
+    if (index >= volumePeriod) volumeSum -= candles[index - volumePeriod]!.volume;
+    const ema20 = ema20ByTime.get(candle.openTimeMs) ?? null;
+    const ema50 = ema50ByTime.get(candle.openTimeMs) ?? null;
+    const ema20ThreeBarsAgo = index >= TREND_PULLBACK_V1.fourHourEmaSlopeLookback
+      ? ema20ByTime.get(candles[index - TREND_PULLBACK_V1.fourHourEmaSlopeLookback]!.openTimeMs) ?? null
+      : null;
+    const rsi14 = rsiByTime.get(candle.openTimeMs) ?? null;
+    const previousRsi14 = index > 0
+      ? rsiByTime.get(candles[index - 1]!.openTimeMs) ?? null
+      : null;
+    const macdHistogram = macdByTime.get(candle.openTimeMs) ?? null;
+    const previousMacdHistogram = index > 0
+      ? macdByTime.get(candles[index - 1]!.openTimeMs) ?? null
+      : null;
+    const volumeSma20 = index >= volumePeriod - 1 ? volumeSum / volumePeriod : null;
 
-  return {
-    interval,
-    candleCloseTimeMs: latest.closeTimeMs,
-    open: latest.open,
-    close: latest.close,
-    volume: latest.volume,
-    ema20,
-    ema50,
-    ema200: latestValue(ema200Points),
-    ema20ThreeBarsAgo,
-    ema50FiveBarsAgo: valueAtCandleOffset(
-      ema50Points, candles, TREND_PULLBACK_V1.dailyEmaSlopeLookback,
-    ),
-    atr14,
-    rsi14,
-    previousRsi14,
-    macdHistogram,
-    previousMacdHistogram,
-    volumeSma20,
-  };
+    if (ema20 == null || ema50 == null || ema20ThreeBarsAgo == null ||
+      atrByTime.get(candle.openTimeMs) == null || rsi14 == null || previousRsi14 == null ||
+      macdHistogram == null || previousMacdHistogram == null || volumeSma20 == null) return null;
+
+    return {
+      interval,
+      candleCloseTimeMs: candle.closeTimeMs,
+      open: candle.open,
+      close: candle.close,
+      volume: candle.volume,
+      ema20,
+      ema50,
+      ema200: ema200ByTime.get(candle.openTimeMs) ?? null,
+      ema20ThreeBarsAgo,
+      ema50FiveBarsAgo: index >= TREND_PULLBACK_V1.dailyEmaSlopeLookback
+        ? ema50ByTime.get(candles[index - TREND_PULLBACK_V1.dailyEmaSlopeLookback]!.openTimeMs) ?? null
+        : null,
+      atr14: atrByTime.get(candle.openTimeMs)!,
+      rsi14,
+      previousRsi14,
+      macdHistogram,
+      previousMacdHistogram,
+      volumeSma20,
+    };
+  });
+}
+
+export function buildIndicatorSnapshot(
+  interval: SpotInterval,
+  candles: readonly MarketCandle[],
+): IntervalIndicatorSnapshot | null {
+  return buildIndicatorSnapshotHistory(interval, candles).at(-1) ?? null;
 }
 
 function condition(id: TrendConditionId, actual: number, reference: number | null): TrendCondition {
@@ -461,12 +464,10 @@ export function evaluateTrendGate(indicators: AnalysisIndicatorSet): TrendGateRe
 export function evaluatePullback(
   candles: readonly MarketCandle[],
   latest: IntervalIndicatorSnapshot,
+  indicatorHistory?: readonly (IntervalIndicatorSnapshot | null)[],
 ): PullbackAssessment {
   assertClosedSeries("4h", candles);
-  const input = toIndicatorCandles(candles);
-  const ema20Points = ema(input, TREND_PULLBACK_V1.emaPeriods.fast);
-  const ema50Points = ema(input, TREND_PULLBACK_V1.emaPeriods.medium);
-  const atrPoints = atr(input, TREND_PULLBACK_V1.atrPeriod);
+  const history = indicatorHistory ?? buildIndicatorSnapshotHistory("4h", candles);
   const firstIndex = Math.max(0, candles.length - 6);
   let touchIndex: number | null = null;
   let zoneLower: number | null = null;
@@ -474,9 +475,10 @@ export function evaluatePullback(
 
   for (let index = firstIndex; index < candles.length; index += 1) {
     const candle = candles[index]!;
-    const ema20 = valueAtTime(ema20Points, candle.openTimeMs);
-    const ema50 = valueAtTime(ema50Points, candle.openTimeMs);
-    const atr14 = valueAtTime(atrPoints, candle.openTimeMs);
+    const snapshot = history[index];
+    const ema20 = snapshot?.ema20;
+    const ema50 = snapshot?.ema50;
+    const atr14 = snapshot?.atr14;
     if (ema20 == null || ema50 == null || atr14 == null) continue;
     const lower = Math.min(ema20, ema50) - 0.25 * atr14;
     const upper = Math.max(ema20, ema50) + 0.25 * atr14;
@@ -493,8 +495,9 @@ export function evaluatePullback(
   if (touchIndex != null) {
     for (let index = touchIndex; index < candles.length; index += 1) {
       const candle = candles[index]!;
-      const ema50 = valueAtTime(ema50Points, candle.openTimeMs);
-      const atr14 = valueAtTime(atrPoints, candle.openTimeMs);
+      const snapshot = history[index];
+      const ema50 = snapshot?.ema50;
+      const atr14 = snapshot?.atr14;
       if (ema50 == null || atr14 == null) continue;
       invalidationLine = ema50 - 0.5 * atr14;
       if (candle.low < invalidationLine) heldInvalidation = false;
@@ -723,13 +726,16 @@ export function updateEntryPlan(plan: EntryPlan, input: UpdateEntryPlanInput): E
 export function evaluateHourlyConfirmation(
   candles: readonly MarketCandle[],
   latest: IntervalIndicatorSnapshot,
+  indicatorHistory?: readonly (IntervalIndicatorSnapshot | null)[],
 ): HourlyConfirmation {
   assertClosedSeries("1h", candles);
-  const input = toIndicatorCandles(candles);
-  const ema20Points = ema(input, TREND_PULLBACK_V1.emaPeriods.fast);
+  const history = indicatorHistory ?? buildIndicatorSnapshotHistory("1h", candles);
   const previous = candles.at(-2);
   const priorThree = candles.slice(-4, -1);
-  const previousEma20 = previous == null ? null : valueAtTime(ema20Points, previous.openTimeMs);
+  let previousEma20 = previous == null ? null : history.at(-2)?.ema20 ?? null;
+  if (previous != null && previousEma20 == null) {
+    previousEma20 = ema(toIndicatorCandles(candles), TREND_PULLBACK_V1.emaPeriods.fast).at(-2)?.value ?? null;
+  }
   const priorThreeHigh = priorThree.length === 3
     ? Math.max(...priorThree.map((candle) => candle.high))
     : null;
@@ -767,8 +773,10 @@ function isDataTimely(indicators: AnalysisIndicatorSet, analysisTimeMs: number):
 // crypto-ai-analysis.STRATEGY.17 crypto-ai-analysis.STRATEGY.18
 export function evaluateStrategy(input: StrategyEvaluationInput): StrategyEvaluation {
   const { indicators, trend } = input;
-  const fourHourPullback = evaluatePullback(input.fourHourCandles, indicators["4h"]);
-  const hourlyConfirmation = evaluateHourlyConfirmation(input.oneHourCandles, indicators["1h"]);
+  const fourHourPullback = input.pullbackAssessment ??
+    evaluatePullback(input.fourHourCandles, indicators["4h"]);
+  const hourlyConfirmation = input.hourlyConfirmation ??
+    evaluateHourlyConfirmation(input.oneHourCandles, indicators["1h"]);
   const dataTimely = isDataTimely(indicators, input.analysisTimeMs);
   const volatilityQualified = indicators["1h"].close > 0 &&
     indicators["1h"].atr14 / indicators["1h"].close >= 0.003 &&

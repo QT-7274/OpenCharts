@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { TradingPage } from "./pages/TradingPage.tsx";
 import { AiAnalysisPrototypePage } from "./pages/AiAnalysisPrototypePage.tsx";
 import { useAuthStore, useTradingStore } from "./services/store.tsx";
+
+const BacktestPage = lazy(() => import("./pages/BacktestPage.tsx").then((module) => ({ default: module.BacktestPage })));
 
 /**
  * OpenCharts entry point.
@@ -13,6 +15,14 @@ import { useAuthStore, useTradingStore } from "./services/store.tsx";
 export function App() {
   if (window.location.pathname === "/prototype/crypto-ai-analysis") {
     return <AiAnalysisPrototypePage />;
+  }
+  // crypto-ai-analysis.VALIDATION.1
+  if (window.location.pathname === "/backtest") {
+    return (
+      <Suspense fallback={<div className="grid min-h-screen place-items-center bg-[#0b0e11] text-xs text-zinc-500">加载回测页面…</div>}>
+        <BacktestPage />
+      </Suspense>
+    );
   }
 
   return <OpenChartsApp />;
