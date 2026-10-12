@@ -13,6 +13,7 @@ const port = Number(process.env.OPENCHARTS_FORWARD_PORT ?? 4001);
 if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("OPENCHARTS_FORWARD_PORT is invalid");
 
 const dataPath = process.env.OPENCHARTS_FORWARD_DATA_PATH || join(homedir(), ".opencharts", "forward-simulation.json");
+const backtestReportPath = process.env.OPENCHARTS_BACKTEST_REPORT_PATH || join(homedir(), ".opencharts", "crypto-backtest-report.json");
 const restAdapter = createBinanceRestAdapter({
   baseUrl: process.env.OPENCHARTS_BINANCE_REST_BASE_URL || "https://data-api.binance.vision/api/v3",
 });
@@ -21,6 +22,7 @@ const stream = new BinanceKlineStream({
   baseUrl: process.env.OPENCHARTS_BINANCE_WS_BASE_URL || "wss://data-stream.binance.vision",
 });
 const storage = createAtomicFileStorage(dataPath);
+const backtestStorage = createAtomicFileStorage(backtestReportPath);
 const ledger = createCryptoPaperLedger({
   storage,
   afterCandle: async (candle) => {
@@ -41,6 +43,7 @@ const runtime = createForwardRuntime({ ledger, stream, restAdapter });
 const api = createForwardSimulationApi({
   ledger,
   storage,
+  backtestStorage,
   runManualAnalysis: (symbol) => {
     if (!SUPPORTED_SPOT_SYMBOLS.includes(symbol)) throw new Error("Unsupported spot symbol");
     return analysisPipeline.runManual(symbol);
@@ -62,6 +65,7 @@ const address = await listenForwardSimulationApi(api, port);
 stream.connect(subscriptions);
 console.info(`Forward simulation listening on http://127.0.0.1:${address.port}/api/forward-sim/state`);
 console.info(`Paper ledger stored at ${dataPath}`);
+console.info(`Backtest report stored at ${backtestReportPath}`);
 
 function shutdown() {
   runtime.stop();

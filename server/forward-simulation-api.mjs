@@ -1,45 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
+import {
+  BACKTEST_RECORD_KEY,
+  backtestStatusSummary,
+  createInvalidBacktestRecord,
+  persistBacktestRecord,
+  readBacktestRecord,
+  validCostAssumptions,
+} from "./backtest-persistence.mjs";
 
 const PREFIX = "/api/forward-sim";
-const MAX_BODY_BYTES = 1_000_000;
+const MAX_BODY_BYTES = 8_000_000;
 const DRAFT_TTL_MS = 5 * 60 * 1_000;
-const BACKTEST_STATUS_KEY = "opencharts.crypto.backtest-status.v1";
 const SUPPORTED_SYMBOLS = new Set(["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT"]);
-const DEFAULT_COST_ASSUMPTIONS = Object.freeze({
-  buyFeeRate: 0.001,
-  sellFeeRate: 0.001,
-  buySlippageRate: 0.0005,
-  sellSlippageRate: 0.0005,
-});
-
-function validCostAssumptions(value) {
-  return value && Object.keys(DEFAULT_COST_ASSUMPTIONS).every((key) =>
-    Number.isFinite(value[key]) && value[key] >= 0 && value[key] < 1);
-}
-
-function profitFactorAtLeast(value, threshold) {
-  return value === "infinite" || (Number.isFinite(value) && value >= threshold);
-}
-
-function deriveBacktestStatus(report) {
-  if (!report || report.strategyVersion !== "trend-pullback-v1" ||
-    !report.validityChecks || Object.values(report.validityChecks).some((passed) => passed !== true)) {
-    return { status: "invalid", strategyVersion: report?.strategyVersion ?? "trend-pullback-v1" };
-  }
-  const outOfSample = report.portfolio?.outOfSample?.metrics;
-  if (!outOfSample || !Number.isFinite(outOfSample.tradeCount) ||
-    !Number.isFinite(outOfSample.maxDrawdownPct) || !Number.isFinite(outOfSample.netReturnPct)) {
-    return { status: "invalid", strategyVersion: report.strategyVersion };
-  }
-  const eligibleSymbols = [...SUPPORTED_SYMBOLS].filter((symbol) =>
-    profitFactorAtLeast(report.symbols?.[symbol]?.outOfSample?.metrics?.profitFactor, 1));
-  const researchUsable = outOfSample.tradeCount >= 100 &&
-    profitFactorAtLeast(outOfSample.profitFactor, 1.1) && outOfSample.maxDrawdownPct <= 25 &&
-    outOfSample.netReturnPct > 0 && eligibleSymbols.length >= 4 &&
-    [...SUPPORTED_SYMBOLS].every((symbol) => report.symbols?.[symbol]);
-  return { status: researchUsable ? "research-usable" : "experimental", strategyVersion: report.strategyVersion };
-}
 
 function sendJson(response, status, value) {
   const body = JSON.stringify(value);
@@ -69,18 +42,13 @@ export function createForwardSimulationApi({
   getAnalysisAttempt,
   runManualAnalysis,
   storage,
+  backtestStorage = storage,
   now = Date.now,
 }) {
   const drafts = new Map();
   function readBacktestStatus() {
-    try {
-      const record = JSON.parse(storage?.getItem(BACKTEST_STATUS_KEY) ?? "null");
-      if (!record || !["research-usable", "experimental", "invalid"].includes(record.status) ||
-        typeof record.strategyVersion !== "string") return null;
-      return record;
-    } catch {
-      return null;
-    }
+    // crypto-ai-analysis.FORWARD_SIMULATION.11-1
+    return backtestStatusSummary(readBacktestRecord(backtestStorage));
   }
 
   return createServer(async (request, response) => {
@@ -99,35 +67,33 @@ export function createForwardSimulationApi({
         });
         return;
       }
+      if (request.method === "GET" && url.pathname === `${PREFIX}/backtest-report`) {
+        const record = readBacktestRecord(backtestStorage);
+        if (!record?.report) {
+          sendJson(response, 404, { error: "No persisted backtest report" });
+          return;
+        }
+        sendJson(response, 200, { report: record.report, backtestStatus: backtestStatusSummary(record) });
+        return;
+      }
       if (request.method === "POST" && url.pathname === `${PREFIX}/backtest-status`) {
-        if (!storage?.setItem) {
+        if (!backtestStorage?.setItem) {
           sendJson(response, 503, { error: "Backtest status storage is unavailable" });
           return;
         }
         const body = await readJson(request);
         if (body?.status === "invalid" && typeof body.strategyVersion === "string" && body.strategyVersion.length <= 100) {
-          const backtestStatus = {
-            status: "invalid",
-            strategyVersion: body.strategyVersion,
-            costAssumptions: DEFAULT_COST_ASSUMPTIONS,
-            updatedAtMs: now(),
-          };
-          storage.setItem(BACKTEST_STATUS_KEY, JSON.stringify(backtestStatus));
-          sendJson(response, 200, { backtestStatus });
+          const record = createInvalidBacktestRecord(body.strategyVersion, now(), body.reason);
+          backtestStorage.setItem(BACKTEST_RECORD_KEY, JSON.stringify(record));
+          sendJson(response, 200, { backtestStatus: backtestStatusSummary(record) });
           return;
         }
         if (!body?.report || !validCostAssumptions(body.costAssumptions)) {
           sendJson(response, 400, { error: "A backtest report and valid cost assumptions are required" });
           return;
         }
-        const derived = deriveBacktestStatus(body.report);
-        const backtestStatus = {
-          ...derived,
-          costAssumptions: body.costAssumptions,
-          updatedAtMs: now(),
-        };
-        storage.setItem(BACKTEST_STATUS_KEY, JSON.stringify(backtestStatus));
-        sendJson(response, 200, { backtestStatus });
+        const record = persistBacktestRecord(backtestStorage, body.report, body.costAssumptions, now());
+        sendJson(response, 200, { backtestStatus: backtestStatusSummary(record) });
         return;
       }
       if (request.method === "POST" && url.pathname === `${PREFIX}/analyze`) {

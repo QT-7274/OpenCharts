@@ -116,6 +116,7 @@ export interface BacktestSymbolResult {
 
 export interface CryptoBacktestReport {
   strategyVersion: string;
+  costAssumptions: BacktestCostAssumptions;
   status: "research-usable" | "experimental" | "invalid";
   statusReason: string;
   generatedAtMs: number;
@@ -1193,6 +1194,13 @@ export function runCryptoBacktest(
 
   return {
     strategyVersion: TREND_PULLBACK_V1.version,
+    // crypto-ai-analysis.VALIDATION.18-1
+    costAssumptions: {
+      buyFeeRate: config.buyFeeRate,
+      sellFeeRate: config.sellFeeRate,
+      buySlippageRate: config.buySlippageRate,
+      sellSlippageRate: config.sellSlippageRate,
+    },
     status: !validityPassed ? "invalid" : researchUsable ? "research-usable" : "experimental",
     statusReason: !validityPassed
       ? "回测有效性检查未通过，结果无效，不可用于模拟订单。"

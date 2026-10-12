@@ -24,25 +24,11 @@ export function saveBacktestStatus(status: Exclude<BacktestResearchStatus, null>
 }
 
 export async function publishBacktestStatus(report: CryptoBacktestReport, config: BacktestConfig): Promise<void> {
-  const compactMetrics = (metrics: CryptoBacktestReport["portfolio"]["outOfSample"]["metrics"]) => ({
-    tradeCount: metrics.tradeCount,
-    maxDrawdownPct: metrics.maxDrawdownPct,
-    netReturnPct: metrics.netReturnPct,
-    profitFactor: metrics.profitFactor,
-  });
-  const attestation = {
-    strategyVersion: report.strategyVersion,
-    validityChecks: report.validityChecks,
-    portfolio: { outOfSample: { metrics: compactMetrics(report.portfolio.outOfSample.metrics) } },
-    symbols: Object.fromEntries(Object.entries(report.symbols).map(([symbol, result]) => [symbol, {
-      outOfSample: result ? { metrics: compactMetrics(result.outOfSample.metrics) } : null,
-    }])),
-  };
   const response = await fetch("/api/forward-sim/backtest-status", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      report: attestation,
+      report,
       costAssumptions: {
         buyFeeRate: config.buyFeeRate,
         sellFeeRate: config.sellFeeRate,

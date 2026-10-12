@@ -150,6 +150,12 @@ describe("crypto historical report", () => {
     const asset = flatHistory();
     const period = { startMs: START, endMs: START + 252 * DAY - 1 };
     const report = runCryptoBacktest([asset], CONFIG, period);
+    expect(report.costAssumptions).toEqual({
+      buyFeeRate: CONFIG.buyFeeRate,
+      sellFeeRate: CONFIG.sellFeeRate,
+      buySlippageRate: CONFIG.buySlippageRate,
+      sellSlippageRate: CONFIG.sellSlippageRate,
+    });
     expect(runCryptoBacktest([asset], CONFIG, period)).toEqual(report);
     const split = report.symbols.BTCUSDT!.outOfSample.period.startMs;
     const change = (candles: readonly MarketCandle[]) => candles.map((candle) => candle.openTimeMs < split ? candle :

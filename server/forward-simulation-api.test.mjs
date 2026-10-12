@@ -1,16 +1,36 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
+import { BACKTEST_RECORD_KEY } from "./backtest-persistence.mjs";
 import { createForwardSimulationApi, listenForwardSimulationApi } from "./forward-simulation-api.mjs";
 
 const servers = [];
-const BACKTEST_STATUS_KEY = "opencharts.crypto.backtest-status.v1";
+const COST_ASSUMPTIONS = { buyFeeRate: 0.001, sellFeeRate: 0.001, buySlippageRate: 0.0005, sellSlippageRate: 0.0005 };
+const PERIOD = { startMs: 1, endMs: 2 };
+const RESULT = {
+  period: PERIOD,
+  metrics: { tradeCount: 10, maxDrawdownPct: 5, netReturnPct: 2, profitFactor: 1.2 },
+  trades: [],
+  buyAndHold: {},
+};
+const BACKTEST_REPORT = {
+  strategyVersion: "trend-pullback-v1",
+  generatedAtMs: 1,
+  costAssumptions: COST_ASSUMPTIONS,
+  requestedPeriod: PERIOD,
+  validityChecks: { closedCandlesOnly: true, nextBarExecution: true, deterministicEngine: true },
+  portfolio: { research: RESULT, outOfSample: RESULT },
+  symbols: Object.fromEntries(["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT"]
+    .map((symbol) => [symbol, { research: RESULT, outOfSample: RESULT }])),
+  robustness: { walkForward: [], marketRegimes: [], parameterSensitivity: [] },
+};
 
 async function startApi(overrides = {}) {
   const calls = [];
   let runtime = { connection: "live", ready: true, storageStatus: "ok" };
   let attempt = { snapshotId: "snapshot-1", symbol: "BTCUSDT", strategyVersion: "trend-pullback-v1", status: "ready" };
-  const stored = new Map([[BACKTEST_STATUS_KEY, JSON.stringify({
-    status: "experimental", strategyVersion: "trend-pullback-v1", updatedAtMs: Date.now(),
+  const stored = new Map([[BACKTEST_RECORD_KEY, JSON.stringify({
+    status: "experimental", strategyVersion: "trend-pullback-v1", costAssumptions: COST_ASSUMPTIONS,
+    updatedAtMs: Date.now(), reportGeneratedAtMs: 1, statusReason: "样本不足", report: BACKTEST_REPORT,
   })]]);
   const storage = {
     getItem: (key) => stored.get(key) ?? null,
@@ -54,7 +74,9 @@ async function startApi(overrides = {}) {
     calls,
     setRuntime(value) { runtime = value; },
     setBacktestStatus(status, strategyVersion = "trend-pullback-v1") {
-      storage.setItem(BACKTEST_STATUS_KEY, JSON.stringify({ status, strategyVersion }));
+      storage.setItem(BACKTEST_RECORD_KEY, JSON.stringify(status === "invalid"
+        ? { status, strategyVersion, updatedAtMs: Date.now(), report: null }
+        : { status, strategyVersion, costAssumptions: COST_ASSUMPTIONS, updatedAtMs: Date.now(), reportGeneratedAtMs: 1, report: BACKTEST_REPORT }));
     },
     setAttempt(value) { attempt = value; },
   };
@@ -218,9 +240,19 @@ test("crypto-ai-analysis.FORWARD_SIMULATION.10-1 derives status from the report 
       status: "research-usable",
       report: {
         strategyVersion: "trend-pullback-v1",
+        costAssumptions: { buyFeeRate: 0.002, sellFeeRate: 0.003, buySlippageRate: 0.001, sellSlippageRate: 0.0015 },
+        generatedAtMs: Date.now(),
+        requestedPeriod: { startMs: 1, endMs: 2 },
         validityChecks: { closedCandlesOnly: true, nextBarExecution: true, deterministicEngine: true },
-        portfolio: { outOfSample: { metrics: { tradeCount: 10, maxDrawdownPct: 5, netReturnPct: 2, profitFactor: 1.2 } } },
-        symbols,
+        portfolio: {
+          research: { period: { startMs: 1, endMs: 2 }, metrics: { tradeCount: 0, maxDrawdownPct: 0, netReturnPct: 0, profitFactor: null }, trades: [], buyAndHold: {} },
+          outOfSample: { period: { startMs: 1, endMs: 2 }, metrics: { tradeCount: 10, maxDrawdownPct: 5, netReturnPct: 2, profitFactor: 1.2 }, trades: [], buyAndHold: {} },
+        },
+        symbols: Object.fromEntries(Object.entries(symbols).map(([symbol, value]) => [symbol, {
+          research: { period: { startMs: 1, endMs: 2 }, metrics: { tradeCount: 0, maxDrawdownPct: 0, netReturnPct: 0, profitFactor: null }, trades: [], buyAndHold: {} },
+          outOfSample: { ...value.outOfSample, period: { startMs: 1, endMs: 2 }, trades: [], buyAndHold: {} },
+        }])),
+        robustness: { walkForward: [], marketRegimes: [], parameterSensitivity: [] },
       },
       costAssumptions: { buyFeeRate: 0.002, sellFeeRate: 0.003, buySlippageRate: 0.001, sellSlippageRate: 0.0015 },
     }),
@@ -229,4 +261,31 @@ test("crypto-ai-analysis.FORWARD_SIMULATION.10-1 derives status from the report 
   const result = await response.json();
   assert.equal(result.backtestStatus.status, "experimental");
   assert.equal(result.backtestStatus.costAssumptions.buyFeeRate, 0.002);
+});
+
+test("crypto-ai-analysis.VALIDATION.18 persists and serves the complete backtest report", async () => {
+  const api = await startApi();
+  const period = { startMs: 1, endMs: 2 };
+  const result = { period, metrics: { tradeCount: 10, maxDrawdownPct: 5, netReturnPct: 2, profitFactor: 1.2 }, trades: [], buyAndHold: {} };
+  const report = {
+    strategyVersion: "trend-pullback-v1", generatedAtMs: 123,
+    costAssumptions: { buyFeeRate: 0.002, sellFeeRate: 0.003, buySlippageRate: 0.001, sellSlippageRate: 0.0015 },
+    requestedPeriod: period,
+    validityChecks: { closedCandlesOnly: true, nextBarExecution: true, deterministicEngine: true },
+    portfolio: { research: result, outOfSample: result },
+    symbols: Object.fromEntries(["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT"]
+      .map((symbol) => [symbol, { research: result, outOfSample: result }])),
+    robustness: { walkForward: [], marketRegimes: [], parameterSensitivity: [] },
+  };
+  const response = await fetch(`${api.baseUrl}/api/forward-sim/backtest-status`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ report, costAssumptions: report.costAssumptions }),
+  });
+  assert.equal(response.status, 200);
+  const stored = await fetch(`${api.baseUrl}/api/forward-sim/backtest-report`);
+  assert.equal(stored.status, 200);
+  const payload = await stored.json();
+  assert.deepEqual(payload.report, report);
+  assert.equal(payload.backtestStatus.reportGeneratedAtMs, 123);
+  assert.equal(payload.backtestStatus.status, "experimental");
 });
