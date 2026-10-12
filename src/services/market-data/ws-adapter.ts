@@ -46,7 +46,7 @@ interface RecoveryResult {
 
 function configuredBaseUrl(): string {
   return (
-    import.meta.env.VITE_BINANCE_WS_BASE_URL || DEFAULT_BINANCE_WS_BASE_URL
+    import.meta.env?.VITE_BINANCE_WS_BASE_URL || DEFAULT_BINANCE_WS_BASE_URL
   ).replace(/\/+$/, "");
 }
 

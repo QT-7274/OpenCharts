@@ -3,6 +3,8 @@ import { useMemo, useState } from "react";
 import { runCryptoBacktest, DEFAULT_BACKTEST_CONFIG, type BacktestConfig, type BacktestPeriodResult, type CryptoBacktestReport } from "../services/analysis/backtest.ts";
 import { BacktestHistoryValidationError, loadCryptoBacktestHistory, type BacktestHistory, type BacktestHistoryProgress } from "../services/analysis/backtest-history.ts";
 import { SUPPORTED_SPOT_SYMBOLS, type SpotSymbol } from "../services/market-data/types.ts";
+import { publishBacktestStatus, publishInvalidBacktestStatus, saveBacktestStatus } from "../services/analysis/backtest-status.ts";
+import { TREND_PULLBACK_V1 } from "../services/analysis/strategy.ts";
 
 type ResultPeriod = "research" | "outOfSample";
 type ResultSymbol = "PORTFOLIO" | SpotSymbol;
@@ -89,12 +91,21 @@ export function BacktestPage() {
     try {
       const nextReport = runCryptoBacktest(loadedHistory.assets, nextConfig, loadedHistory.requestedPeriod);
       setReport(nextReport);
+      setInvalidBacktest(nextReport.status === "invalid");
+      saveBacktestStatus(nextReport.status);
+      try {
+        await publishBacktestStatus(nextReport, nextConfig);
+      } catch (reason) {
+        setError(reason instanceof Error ? `回测已完成，但未同步到前向模拟服务：${reason.message}` : "回测状态未同步到前向模拟服务");
+      }
       setPeriod("outOfSample");
     } catch (reason) {
       // crypto-ai-analysis.VALIDATION.14-1
       setReport(null);
       setInvalidBacktest(true);
+      saveBacktestStatus("invalid");
       setError(reason instanceof Error ? reason.message : "回测计算失败");
+      try { await publishInvalidBacktestStatus(TREND_PULLBACK_V1.version); } catch { /* Keep the calculation failure visible. */ }
     } finally {
       setRecalculating(false);
     }
@@ -114,6 +125,8 @@ export function BacktestPage() {
         setHistory(null);
         setReport(null);
         setInvalidBacktest(true);
+        saveBacktestStatus("invalid");
+        try { await publishInvalidBacktestStatus(TREND_PULLBACK_V1.version); } catch { /* Keep the history failure visible. */ }
       }
       setError(reason instanceof Error ? reason.message : "历史行情加载失败");
     } finally {
@@ -130,7 +143,9 @@ export function BacktestPage() {
   const isBusy = loading || recalculating;
   const statusTone = report?.status === "research-usable"
     ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-    : "border-amber-500/30 bg-amber-500/10 text-amber-200";
+    : report?.status === "invalid"
+      ? "border-rose-500/30 bg-rose-500/10 text-rose-300"
+      : "border-amber-500/30 bg-amber-500/10 text-amber-200";
 
   return (
     <main className="min-h-screen bg-[#0b0e11] text-zinc-100">
@@ -203,7 +218,7 @@ export function BacktestPage() {
 
             <section className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 py-4">
               <div className="flex min-w-0 items-center gap-3">
-                <span className={`border px-2 py-1 text-[11px] font-medium ${statusTone}`}>{report.status === "research-usable" ? "可继续模拟研究" : "实验性结果"}</span>
+                <span className={`border px-2 py-1 text-[11px] font-medium ${statusTone}`}>{report.status === "research-usable" ? "可继续模拟研究" : report.status === "invalid" ? "回测无效" : "实验性结果"}</span>
                 <span className={`text-xs ${period === "research" || sampleSufficient ? "text-zinc-400" : "text-amber-300"}`}>{period === "research" ? `研究区间 · ${metrics?.tradeCount ?? 0} 笔` : sampleSufficient ? `样本足够 · ${metrics?.tradeCount} 笔` : `样本不足 · ${metrics?.tradeCount ?? 0}/${sampleRequired} 笔`}</span>
               </div>
               <span className="max-w-3xl text-right text-[11px] leading-5 text-zinc-500">{report.statusReason} 本结果仅用于模拟研究，不构成投资建议。</span>
@@ -249,6 +264,67 @@ export function BacktestPage() {
                   {Object.keys(metrics!.skipReasons).length === 0 ? <span className="text-xs text-zinc-600">无</span> : (
                     <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs text-zinc-300">{Object.entries(metrics!.skipReasons).sort((a, b) => b[1] - a[1]).map(([reason, count]) => <span key={reason}>{SKIP_REASON_LABELS[reason] ?? reason} <span className="font-mono text-zinc-500">{count}</span></span>)}</div>
                   )}
+                </div>
+              </div>
+            </section>
+
+            {/* crypto-ai-analysis.VALIDATION.15 crypto-ai-analysis.VALIDATION.16 crypto-ai-analysis.VALIDATION.17 */}
+            <section className="grid gap-6 border-b border-white/10 py-5 xl:grid-cols-3">
+              <div className="min-w-0">
+                <h2 className="mb-1 text-xs font-semibold text-zinc-300">滚动样本外验证</h2>
+                <p className="mb-3 text-[10px] leading-4 text-zinc-600">固定策略版本；每个窗口只使用此前区间，窗口表现不用于调参。</p>
+                <div className="space-y-2">
+                  {report.robustness.walkForward.map((fold) => (
+                    <div key={fold.id} className="grid grid-cols-[42px_minmax(0,1fr)_auto] items-start gap-2 border-t border-white/5 pt-2 text-[10px]">
+                      <span className="font-mono text-zinc-500">WF{fold.id}</span>
+                      <span className="min-w-0 text-zinc-500">
+                        训练至 {formatTime(fold.trainingPeriod.endMs)}
+                        <span className="block truncate text-zinc-600">测试 {formatTime(fold.testPeriod.startMs)} – {formatTime(fold.testPeriod.endMs)}</span>
+                      </span>
+                      <span className="text-right font-mono text-zinc-300">
+                        {formatPct(fold.metrics.netReturnPct)} · PF {formatProfitFactor(fold.metrics.profitFactor)}
+                        <span className="block text-zinc-500">
+                          DD {formatNumber(fold.metrics.maxDrawdownPct)}% · Sharpe {formatNumber(fold.metrics.sharpeRatio)}
+                        </span>
+                        <span className={`block ${fold.sampleSufficient ? "text-emerald-400" : "text-amber-400"}`}>
+                          {fold.metrics.tradeCount} 笔 · {fold.sampleSufficient ? "样本足够" : "样本不足"}
+                        </span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="min-w-0">
+                <h2 className="mb-1 text-xs font-semibold text-zinc-300">按市场阶段</h2>
+                <p className="mb-3 text-[10px] leading-4 text-zinc-600">使用成交时已闭合的 BTC 日线 EMA50 / EMA200；仅汇总当前样本外成交。</p>
+                <div className="space-y-2">
+                  {report.robustness.marketRegimes.map((regime) => (
+                    <div key={regime.regime} className="grid grid-cols-[60px_minmax(0,1fr)] gap-2 border-t border-white/5 pt-2 text-[10px]">
+                      <span className="text-zinc-400">{{ bull: "牛市", sideways: "震荡", bear: "熊市", unknown: "未知" }[regime.regime]}</span>
+                      <span className="min-w-0 font-mono text-zinc-300">
+                        {regime.tradeCount} 笔 · 净盈亏 {formatNumber(regime.netPnl)} USDT
+                        <span className="block text-zinc-500">胜率 {formatNumber(regime.winRatePct)}% · PF {formatProfitFactor(regime.profitFactor)}</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="min-w-0">
+                <h2 className="mb-1 text-xs font-semibold text-zinc-300">评分门槛敏感性</h2>
+                <p className="mb-3 text-[10px] leading-4 text-zinc-600">仅研究区间；每个门槛是独立版本，不代表推荐参数。</p>
+                <div className="space-y-2">
+                  {report.robustness.parameterSensitivity.map((variant) => (
+                    <div key={variant.strategyVersion} className="grid grid-cols-[54px_minmax(0,1fr)_auto] gap-2 border-t border-white/5 pt-2 text-[10px]">
+                      <span className="text-zinc-400">{variant.minimumScore} 分</span>
+                      <span className="truncate font-mono text-zinc-600" title={variant.strategyVersion}>{variant.strategyVersion}</span>
+                      <span className="text-right font-mono text-zinc-300">
+                        {variant.metrics.tradeCount} 笔 · {formatPct(variant.metrics.netReturnPct)}
+                        <span className="block text-zinc-500">PF {formatProfitFactor(variant.metrics.profitFactor)} · DD {formatNumber(variant.metrics.maxDrawdownPct)}%</span>
+                      </span>
+                    </div>
+                  ))}
                 </div>
               </div>
             </section>

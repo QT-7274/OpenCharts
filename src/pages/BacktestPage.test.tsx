@@ -64,4 +64,73 @@ describe("backtest validation UI", () => {
     fireEvent.click(screen.getByRole("button", { name: "加载行情并回测" }));
     expect(await screen.findByRole("alert")).not.toHaveTextContent("invalid");
   });
+
+  it("crypto-ai-analysis.VALIDATION.15 crypto-ai-analysis.VALIDATION.16 crypto-ai-analysis.VALIDATION.17 shows separated robustness results", async () => {
+    loadHistory.mockResolvedValue({
+      assets: [],
+      requestedPeriod: { startMs: 1, endMs: 2 },
+    });
+    const metrics = {
+      signalCount: 0,
+      tradeCount: 0,
+      skippedSignalCount: 0,
+      skipReasons: {},
+      strategyStateCounts: { watch: 0, setup: 0, enter: 0, avoid: 0 },
+      winRatePct: null,
+      netReturnPct: 0,
+      annualizedReturnPct: null,
+      profitFactor: null,
+      maxDrawdownPct: 0,
+      averageNetPnl: null,
+      averageHoldingHours: null,
+      averageActualRiskReward: null,
+      totalCosts: 0,
+      maxConsecutiveLosses: 0,
+      sharpeRatio: null,
+      endingEquity: 10_000,
+    };
+    const period = { startMs: 1, endMs: 2 };
+    const periodResult = {
+      period,
+      metrics,
+      buyAndHold: {
+        netReturnPct: 0,
+        maxDrawdownPct: 0,
+        sharpeRatio: null,
+        netReturnDifferencePct: 0,
+        maxDrawdownDifferencePct: 0,
+        sharpeDifference: null,
+      },
+      trades: [],
+    };
+    runBacktest.mockReturnValue({
+      strategyVersion: "trend-pullback-v1",
+      status: "experimental",
+      statusReason: "样本不足",
+      generatedAtMs: 2,
+      requestedPeriod: period,
+      symbols: {},
+      portfolio: { research: periodResult, outOfSample: periodResult },
+      robustness: {
+        walkForward: [{ id: 1, trainingPeriod: period, testPeriod: period, sampleSufficient: false, metrics }],
+        marketRegimes: [{ regime: "bull", tradeCount: 1, netPnl: 2, winRatePct: 100, profitFactor: "infinite" }],
+        parameterSensitivity: [{ minimumScore: 65, strategyVersion: "trend-pullback-v1-score-65", evaluationScope: "research-only", period, metrics }],
+      },
+      validityChecks: { closedCandlesOnly: true, nextBarExecution: true, deterministicEngine: true },
+    });
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+
+    render(<BacktestPage />);
+    fireEvent.click(screen.getByRole("button", { name: "加载行情并回测" }));
+
+    expect(await screen.findByText("滚动样本外验证")).toBeInTheDocument();
+    expect(screen.getByText("按市场阶段")).toBeInTheDocument();
+    expect(screen.getByText("评分门槛敏感性")).toBeInTheDocument();
+    expect(screen.getByText("trend-pullback-v1-score-65")).toBeInTheDocument();
+    expect(screen.getByText(/DD 0% · Sharpe —/)).toBeInTheDocument();
+    expect(screen.getByText(/胜率 100% · PF ∞/)).toBeInTheDocument();
+  });
 });

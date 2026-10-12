@@ -12,6 +12,7 @@ const { getLatest, subscribe, updateAiSnapshot, requestAiExplanation } = vi.hois
 vi.mock("../../services/analysis/runtime.ts", () => ({
   analysisPipeline: { getLatest, subscribe, updateAiSnapshot },
 }));
+vi.mock("./CryptoPaperPanel.tsx", () => ({ CryptoPaperPanel: () => null }));
 vi.mock("../../services/market-data/runtime.ts", () => ({ marketDataMode: "binance" }));
 vi.mock("../../services/analysis/ai-explanation-client.ts", () => ({ requestAiExplanation }));
 

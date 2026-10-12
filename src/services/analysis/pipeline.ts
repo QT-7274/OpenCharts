@@ -337,6 +337,14 @@ export function createAnalysisPipeline({ restAdapter, getHealth, getRiskContext,
         range.symbol === symbol && range.interval === interval && range.toMs >= earliestOpen && range.fromMs <= latestOpen);
       const points = new Set(repairPoints(inspected.issues, earliestOpen, latestOpen));
       let repairFailed = false;
+      if (event && interval === "1h" && event.openTimeMs <= latestOpen && event.openTimeMs >= earliestOpen) {
+        const matching = inspected.candles.find((row) => row.openTimeMs === event.openTimeMs);
+        if (!matching || matching.open !== event.open || matching.high !== event.high ||
+          matching.low !== event.low || matching.close !== event.close || matching.volume !== event.volume ||
+          matching.quoteVolume !== event.quoteVolume || matching.tradeCount !== event.tradeCount) {
+          points.add(event.openTimeMs);
+        }
+      }
       if (inspected.issues.some((issue) => issue.code === "warmup" || issue.code === "stale")) {
         try {
           const backfill = await restAdapter.getCandles({
@@ -353,15 +361,6 @@ export function createAnalysisPipeline({ restAdapter, getHealth, getRiskContext,
       for (const range of healthRanges) {
         for (let at = Math.max(range.fromMs, earliestOpen); at <= Math.min(range.toMs, latestOpen); at += ms) points.add(at);
       }
-      if (event && interval === "1h" && event.openTimeMs <= latestOpen && event.openTimeMs >= earliestOpen) {
-        const matching = inspected.candles.find((row) => row.openTimeMs === event.openTimeMs);
-        if (!matching || matching.open !== event.open || matching.high !== event.high ||
-          matching.low !== event.low || matching.close !== event.close || matching.volume !== event.volume ||
-          matching.quoteVolume !== event.quoteVolume || matching.tradeCount !== event.tradeCount) {
-          points.add(event.openTimeMs);
-        }
-      }
-
       for (const at of [...points].sort((a, b) => a - b)) {
         try {
           const repaired = await restAdapter.getCandles({ symbol, interval, startTimeMs: at, endTimeMs: at + ms - 1, limit: 1 });
@@ -405,16 +404,24 @@ export function createAnalysisPipeline({ restAdapter, getHealth, getRiskContext,
         let currentPriceObservedAtMs: number | null = null;
         let quoteServerTimeMs: number | null = null;
         let quoteFailure: ReturnType<typeof getSpotQuoteFailure> = "spot-price-unavailable";
-        try {
-          const quote = await restAdapter.getSpotQuote(symbol);
-          currentPrice = quote.price;
-          currentPriceObservedAtMs = quote.tradeTimeMs;
-          quoteServerTimeMs = quote.serverTimeMs;
-          quoteFailure = getSpotQuoteFailure(
-            currentPrice, currentPriceObservedAtMs, quoteServerTimeMs,
-          );
-        } catch {
-          quoteFailure = "spot-price-unavailable";
+        if (event) {
+          // crypto-ai-analysis.FORWARD_SIMULATION.1-1
+          currentPrice = event.close;
+          currentPriceObservedAtMs = event.closeTimeMs;
+          quoteServerTimeMs = event.closeTimeMs;
+          quoteFailure = getSpotQuoteFailure(currentPrice, currentPriceObservedAtMs, quoteServerTimeMs, time);
+        } else {
+          try {
+            const quote = await restAdapter.getSpotQuote(symbol);
+            currentPrice = quote.price;
+            currentPriceObservedAtMs = quote.tradeTimeMs;
+            quoteServerTimeMs = quote.serverTimeMs;
+            quoteFailure = getSpotQuoteFailure(
+              currentPrice, currentPriceObservedAtMs, quoteServerTimeMs,
+            );
+          } catch {
+            quoteFailure = "spot-price-unavailable";
+          }
         }
         result.entryPlanFailure = quoteFailure;
         const riskContext = getRiskContext();

@@ -103,14 +103,7 @@ key is read only by the local backend and must not use a `VITE_` prefix.
 The automatic daily-call counter is stored at `~/.opencharts/ai-usage.json`;
 set `OPENCHARTS_AI_USAGE_PATH` to change that file location.
 
-Start the backend in one terminal:
-
-```bash
-nvm use 22
-npm run dev:server
-```
-
-Start the frontend in a second terminal:
+Start the complete local research stack (web app, AI explanation API, and independent forward-simulation service) in one terminal:
 
 ```bash
 nvm use 22
@@ -256,7 +249,9 @@ Demo instruments are defined in `src/services/demo/instruments.ts`. To add one:
 
 | Command | Description |
 | --- | --- |
-| `npm run dev` | Start the Vite dev server |
+| `npm run dev` | Start the Vite app, AI API, and forward-simulation service |
+| `npm run dev:research` | Start the complete local research stack |
+| `npm run dev:server` | Start only the AI explanation API |
 | `npm run build` | Production build to `dist/` |
 | `npm run preview` | Preview the production build |
 | `npm run typecheck` | Type-check the project with `tsc` |

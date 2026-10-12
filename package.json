@@ -4,16 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "npm run dev:research",
     "dev:ci": "vite --host 0.0.0.0 --port 5173",
     "dev:server": "node --env-file-if-exists=.env server/index.mjs",
+    "dev:research": "node --env-file-if-exists=.env server/dev-research.mjs",
     "prototype:crypto-ai": "vite --host 127.0.0.1 --port 4174",
     "prebuild": "npm test",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
-    "test": "vitest run",
+    "test": "vitest run && node --test server/file-storage.test.mjs server/forward-simulation-api.test.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {

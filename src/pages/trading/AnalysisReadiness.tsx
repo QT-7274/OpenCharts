@@ -5,6 +5,7 @@ import { requestAiExplanation } from "../../services/analysis/ai-explanation-cli
 import { marketDataMode } from "../../services/market-data/runtime.ts";
 import { isSpotSymbol, type SpotInterval } from "../../services/market-data/types.ts";
 import type { AnalysisAttempt } from "../../services/analysis/pipeline.ts";
+import { CryptoPaperPanel } from "./CryptoPaperPanel.tsx";
 import {
   getSpotQuoteFailure,
   type EntryPlanFailure,
@@ -213,6 +214,7 @@ export function AnalysisReadiness({ symbol }: { symbol: string }) {
           本次分析或 AI 解释未能保存到本地，刷新后可能丢失。
         </p>
       )}
+      {attempt && <CryptoPaperPanel attempt={attempt} />}
       {attempt && (
         <section className="border-t border-border/60 pt-1.5" aria-label="AI 解释">
           <div className="mb-1 flex flex-wrap items-center justify-between gap-2">

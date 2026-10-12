@@ -37,6 +37,9 @@ export interface BacktestConfig {
   maxPortfolioRiskFraction?: number;
 }
 
+export type BacktestCostAssumptions = Pick<BacktestConfig,
+  "buyFeeRate" | "sellFeeRate" | "buySlippageRate" | "sellSlippageRate">;
+
 export interface BacktestAssetData {
   symbol: SpotSymbol;
   candles1h: readonly MarketCandle[];
@@ -113,17 +116,50 @@ export interface BacktestSymbolResult {
 
 export interface CryptoBacktestReport {
   strategyVersion: string;
-  status: "research-usable" | "experimental";
+  status: "research-usable" | "experimental" | "invalid";
   statusReason: string;
   generatedAtMs: number;
   requestedPeriod: BacktestPeriod;
   symbols: Partial<Record<SpotSymbol, BacktestSymbolResult>>;
   portfolio: BacktestSymbolResult;
+  robustness: BacktestRobustnessReport;
   validityChecks: {
-    closedCandlesOnly: true;
-    nextBarExecution: true;
-    deterministicEngine: true;
+    closedCandlesOnly: boolean;
+    nextBarExecution: boolean;
+    deterministicEngine: boolean;
   };
+}
+
+export interface BacktestWalkForwardFold {
+  id: number;
+  trainingPeriod: BacktestPeriod;
+  testPeriod: BacktestPeriod;
+  sampleSufficient: boolean;
+  metrics: BacktestMetrics;
+}
+
+export type MarketRegime = "bull" | "sideways" | "bear" | "unknown";
+
+export interface MarketRegimeMetrics {
+  regime: MarketRegime;
+  tradeCount: number;
+  netPnl: number;
+  winRatePct: number | null;
+  profitFactor: number | "infinite" | null;
+}
+
+export interface ParameterSensitivityResult {
+  minimumScore: number;
+  strategyVersion: string;
+  evaluationScope: "research-only";
+  period: BacktestPeriod;
+  metrics: BacktestMetrics;
+}
+
+export interface BacktestRobustnessReport {
+  walkForward: BacktestWalkForwardFold[];
+  marketRegimes: MarketRegimeMetrics[];
+  parameterSensitivity: ParameterSensitivityResult[];
 }
 
 export interface BacktestSignal {
@@ -308,7 +344,9 @@ function buildStrategyEvents(
       pullbackAssessment: pullback,
       hourlyConfirmation: confirmation,
     };
-    const preliminary = evaluateStrategy({ ...input, riskReward: 2, entryPlanStatus: "active" });
+    // The candidate must still pass every hard confirmation gate. The score threshold is
+    // applied later so sensitivity variants can reuse the same causal signal candidates.
+    const preliminary = evaluateStrategy({ ...input, riskReward: 2, entryPlanStatus: null, minimumEntryScore: 0 });
     if (preliminary.state !== "enter" || pullback.lowestLow == null) {
       events.push({
         timeMs: analysisTimeMs,
@@ -350,7 +388,10 @@ function buildStrategyEvents(
     const strategy = evaluateStrategy({
       ...input,
       riskReward: planResult.plan.riskReward,
-      entryPlanStatus: planResult.plan.status,
+      // The plan is created after the confirming candle closes; the simulator
+      // only evaluates fills from the next candle via validFromMs.
+      entryPlanStatus: null,
+      minimumEntryScore: 0,
     });
     const signal = strategy.state === "enter" ? {
       symbol: asset.symbol,
@@ -466,6 +507,16 @@ function makeClosedTrade(position: OpenPosition, exitTimeMs: number): BacktestTr
     exitReason: position.exitReason ?? "period-end",
     strategyVersion: position.signal.strategyVersion,
   };
+}
+
+// crypto-ai-analysis.VALIDATION.10
+export function calculateAnnualizedSharpe(hourlyReturns: readonly number[]): number | null {
+  if (hourlyReturns.length < 2 || hourlyReturns.some((value) => !Number.isFinite(value))) return null;
+  const mean = hourlyReturns.reduce((sum, value) => sum + value, 0) / hourlyReturns.length;
+  const variance = hourlyReturns.reduce((sum, value) => sum + (value - mean) ** 2, 0) /
+    (hourlyReturns.length - 1);
+  const standardDeviation = Math.sqrt(variance);
+  return standardDeviation > 0 ? mean / standardDeviation * Math.sqrt(24 * 365) : null;
 }
 
 function sellPosition(
@@ -616,12 +667,7 @@ function calculateMetrics(
     const current = equityCurve[index]!.equity;
     if (previous > 0) returns.push(current / previous - 1);
   }
-  const mean = returns.length ? returns.reduce((sum, value) => sum + value, 0) / returns.length : 0;
-  const variance = returns.length > 1
-    ? returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (returns.length - 1)
-    : 0;
-  const standardDeviation = Math.sqrt(variance);
-  const sharpeRatio = standardDeviation > 0 ? mean / standardDeviation * Math.sqrt(24 * 365) : null;
+  const sharpeRatio = calculateAnnualizedSharpe(returns);
   const durationDays = Math.max(0, (period.endMs - period.startMs) / DAY_MS);
   const totalReturn = endingEquity / initialCapital;
   const annualizedReturnPct = durationDays > 0 && totalReturn > 0
@@ -714,6 +760,7 @@ export function simulateSpotExecution(
   analysisEvents: ReadonlyMap<SpotSymbol, readonly BacktestAnalysisEvent[]>,
   period: BacktestPeriod,
   config: BacktestConfig,
+  options: { includeOpeningSignal?: boolean } = {},
 ): BacktestExecutionResult {
   const sortedAssets = [...assets].sort((a, b) => a.symbol.localeCompare(b.symbol));
   const eventsBySymbol = new Map<SpotSymbol, Map<number, BacktestAnalysisEvent>>();
@@ -744,6 +791,55 @@ export function simulateSpotExecution(
   const equityCurve: Array<{ timeMs: number; equity: number }> = [
     { timeMs: period.startMs, equity: config.initialCapital },
   ];
+
+  function queueSignal(symbol: SpotSymbol, event: BacktestAnalysisEvent): void {
+    if (!event.signal || event.state !== "enter") return;
+    if (positions.has(symbol)) {
+      addReason(skippedReasons, "position-already-open");
+      return;
+    }
+    if (pending.has(symbol)) {
+      addReason(skippedReasons, "entry-plan-already-active");
+      return;
+    }
+    const equity = markEquity(cash.value, positions, lastPrices, config);
+    const tradeRiskLimit = equity * (config.maxTradeRiskFraction ?? DEFAULT_BACKTEST_CONFIG.maxTradeRiskFraction);
+    const portfolioRiskLimit = equity * (config.maxPortfolioRiskFraction ?? DEFAULT_BACKTEST_CONFIG.maxPortfolioRiskFraction);
+    const entryWorstCase = event.signal.entryUpper * (1 + config.buySlippageRate);
+    const unitRisk = entryWorstCase * (1 + config.buyFeeRate) -
+      event.signal.stopPrice * (1 - config.sellSlippageRate) * (1 - config.sellFeeRate);
+    if (unitRisk <= 0 || cash.value <= 0) {
+      addReason(skippedReasons, "insufficient-spot-balance");
+      return;
+    }
+    const quantity = Math.min(
+      tradeRiskLimit / unitRisk,
+      cash.value / (entryWorstCase * (1 + config.buyFeeRate)),
+    );
+    const riskAmount = quantity * unitRisk;
+    if (quantity <= 0 || riskAmount <= 0) {
+      addReason(skippedReasons, "insufficient-spot-balance");
+    } else if (estimateOpenRisk(positions, pending) + riskAmount > portfolioRiskLimit + 1e-9) {
+      addReason(skippedReasons, "portfolio-risk-limit");
+    } else {
+      pending.set(symbol, { signal: event.signal, quantity, riskAmount, signalRiskBudget: tradeRiskLimit });
+    }
+  }
+
+  // crypto-ai-analysis.VALIDATION.15-3
+  const openingSignals = options.includeOpeningSignal ? sortedAssets.flatMap((asset) => {
+    const firstCandle = periodCandles(asset, period)[0];
+    if (!firstCandle) return [];
+    const previousEvent = [...(analysisEvents.get(asset.symbol) ?? [])]
+      .filter((event) => event.timeMs === firstCandle.openTimeMs - 1)
+      .at(-1);
+    return previousEvent?.state === "enter" && previousEvent.signal &&
+      previousEvent.signal.validFromMs === firstCandle.openTimeMs &&
+      previousEvent.signal.expiresAtMs > firstCandle.openTimeMs
+      ? [{ symbol: asset.symbol, event: previousEvent }]
+      : [];
+  }).sort((a, b) => a.event.timeMs - b.event.timeMs || a.symbol.localeCompare(b.symbol)) : [];
+  for (const item of openingSignals) queueSignal(item.symbol, item.event);
 
   for (const openTimeMs of times) {
     const bars = barsByTime.get(openTimeMs)!;
@@ -790,40 +886,9 @@ export function simulateSpotExecution(
         pending.delete(asset.symbol);
         addReason(skippedReasons, "entry-plan-invalidated");
       }
-      if (!event.signal) continue;
+      if (!event.signal || event.state !== "enter") continue;
       signalCount += 1;
-      if (positions.has(asset.symbol)) {
-        addReason(skippedReasons, "position-already-open");
-        continue;
-      }
-      if (pending.has(asset.symbol)) {
-        addReason(skippedReasons, "entry-plan-already-active");
-        continue;
-      }
-
-      const equity = markEquity(cash.value, positions, lastPrices, config);
-      const tradeRiskLimit = equity * (config.maxTradeRiskFraction ?? DEFAULT_BACKTEST_CONFIG.maxTradeRiskFraction);
-      const portfolioRiskLimit = equity * (config.maxPortfolioRiskFraction ?? DEFAULT_BACKTEST_CONFIG.maxPortfolioRiskFraction);
-      const entryWorstCase = event.signal.entryUpper * (1 + config.buySlippageRate);
-      const unitRisk = entryWorstCase * (1 + config.buyFeeRate) -
-        event.signal.stopPrice * (1 - config.sellSlippageRate) * (1 - config.sellFeeRate);
-      if (unitRisk <= 0 || cash.value <= 0) {
-        addReason(skippedReasons, "insufficient-spot-balance");
-        continue;
-      }
-      const signalRiskBudget = tradeRiskLimit;
-      const quantity = Math.min(
-        signalRiskBudget / unitRisk,
-        cash.value / (entryWorstCase * (1 + config.buyFeeRate)),
-      );
-      const riskAmount = quantity * unitRisk;
-      if (quantity <= 0 || riskAmount <= 0) {
-        addReason(skippedReasons, "insufficient-spot-balance");
-      } else if (estimateOpenRisk(positions, pending) + riskAmount > portfolioRiskLimit + 1e-9) {
-        addReason(skippedReasons, "portfolio-risk-limit");
-      } else {
-        pending.set(asset.symbol, { signal: event.signal, quantity, riskAmount, signalRiskBudget });
-      }
+      queueSignal(asset.symbol, event);
     }
 
     equityCurve.push({
@@ -878,6 +943,139 @@ function makeSymbolWindows(
   return splitPeriod(asset.candles1h, available);
 }
 
+function applyEntryScoreThreshold(
+  candidates: ReadonlyMap<SpotSymbol, readonly BacktestAnalysisEvent[]>,
+  minimumScore: number,
+  strategyVersion: string,
+): Map<SpotSymbol, readonly BacktestAnalysisEvent[]> {
+  return new Map([...candidates].map(([symbol, events]) => [symbol, events.map((event) => {
+    if (event.state !== "enter" || !event.signal) return event;
+    const signal = { ...event.signal, strategyVersion };
+    return event.signal.score < minimumScore
+      ? { ...event, state: "avoid" as const, avoidReason: "confirmation-score-insufficient" as const, signal }
+      : { ...event, state: "enter" as const, avoidReason: null, signal };
+  })]));
+}
+
+function buildWalkForwardFolds(
+  asset: BacktestAssetData,
+  assets: readonly BacktestAssetData[],
+  analysisEvents: ReadonlyMap<SpotSymbol, readonly BacktestAnalysisEvent[]>,
+  researchPeriod: BacktestPeriod,
+  outOfSamplePeriod: BacktestPeriod,
+  config: BacktestConfig,
+): BacktestWalkForwardFold[] {
+  const candles = periodCandles(asset, outOfSamplePeriod);
+  return [0, 1, 2].map((foldIndex) => {
+    const fromIndex = Math.floor(candles.length * foldIndex / 3);
+    const toIndex = Math.floor(candles.length * (foldIndex + 1) / 3);
+    const first = candles[fromIndex];
+    const last = toIndex > fromIndex ? candles[toIndex - 1] : null;
+    const testStartMs = first?.openTimeMs ?? (candles[fromIndex - 1]?.closeTimeMs ?? outOfSamplePeriod.startMs - 1) + 1;
+    const testPeriod = {
+      startMs: testStartMs,
+      endMs: last?.closeTimeMs ?? testStartMs - 1,
+    };
+    const execution = simulateSpotExecution(assets, analysisEvents, testPeriod, config, {
+      includeOpeningSignal: true,
+    });
+    return {
+      id: foldIndex + 1,
+      trainingPeriod: { startMs: researchPeriod.startMs, endMs: testStartMs - 1 },
+      testPeriod,
+      sampleSufficient: execution.metrics.tradeCount >= 100,
+      metrics: execution.metrics,
+    };
+  });
+}
+
+function classifySnapshotRegime(snapshot: ReturnType<typeof buildIndicatorSnapshotHistory>[number]): MarketRegime {
+  if (!snapshot?.ema200) return "unknown";
+  if (snapshot.close > snapshot.ema200 && snapshot.ema50 > snapshot.ema200) return "bull";
+  if (snapshot.close < snapshot.ema200 && snapshot.ema50 < snapshot.ema200) return "bear";
+  return "sideways";
+}
+
+// crypto-ai-analysis.VALIDATION.16 crypto-ai-analysis.VALIDATION.16-1
+export function classifyMarketRegimeAt(candles: readonly MarketCandle[], timeMs: number): MarketRegime {
+  if (!Number.isFinite(timeMs)) return "unknown";
+  const closedCandles = candles
+    .filter((candle) => candle.isClosed && candle.closeTimeMs <= timeMs)
+    .sort((a, b) => a.openTimeMs - b.openTimeMs);
+  const snapshots = buildIndicatorSnapshotHistory("1d", closedCandles);
+  return classifySnapshotRegime(snapshots.at(-1) ?? null);
+}
+
+function summarizeMarketRegimes(
+  trades: readonly BacktestTrade[],
+  benchmarkCandles: readonly MarketCandle[],
+): MarketRegimeMetrics[] {
+  const snapshots = buildIndicatorSnapshotHistory("1d", benchmarkCandles);
+  const groups = new Map<MarketRegime, BacktestTrade[]>([
+    ["bull", []], ["sideways", []], ["bear", []], ["unknown", []],
+  ]);
+  for (const trade of trades) {
+    const candleIndex = latestClosedIndex(benchmarkCandles, trade.entryTimeMs);
+    const regime = classifySnapshotRegime(candleIndex < 0 ? null : snapshots[candleIndex] ?? null);
+    groups.get(regime)!.push(trade);
+  }
+  return (["bull", "sideways", "bear", "unknown"] as const).map((regime) => {
+    const grouped = groups.get(regime)!;
+    const profits = grouped.filter((trade) => trade.netPnl > 0).reduce((sum, trade) => sum + trade.netPnl, 0);
+    const losses = Math.abs(grouped.filter((trade) => trade.netPnl < 0).reduce((sum, trade) => sum + trade.netPnl, 0));
+    return {
+      regime,
+      tradeCount: grouped.length,
+      netPnl: grouped.reduce((sum, trade) => sum + trade.netPnl, 0),
+      winRatePct: grouped.length ? grouped.filter((trade) => trade.netPnl > 0).length / grouped.length * 100 : null,
+      profitFactor: losses === 0 ? (profits > 0 ? "infinite" : null) : profits / losses,
+    };
+  });
+}
+
+// crypto-ai-analysis.VALIDATION.15 crypto-ai-analysis.VALIDATION.15-1 crypto-ai-analysis.VALIDATION.15-2
+// crypto-ai-analysis.VALIDATION.17 crypto-ai-analysis.VALIDATION.17-1
+function buildRobustnessReport(
+  assets: readonly BacktestAssetData[],
+  candidateEvents: ReadonlyMap<SpotSymbol, readonly BacktestAnalysisEvent[]>,
+  baselineEvents: ReadonlyMap<SpotSymbol, readonly BacktestAnalysisEvent[]>,
+  researchPeriod: BacktestPeriod,
+  outOfSamplePeriod: BacktestPeriod,
+  portfolioResearchResult: BacktestPeriodResult,
+  portfolioOutOfSampleResult: BacktestPeriodResult,
+  config: BacktestConfig,
+): BacktestRobustnessReport {
+  const btc = assets.find((asset) => asset.symbol === "BTCUSDT");
+  const thresholds = [65, 70, 75] as const;
+  return {
+    walkForward: buildWalkForwardFolds(
+      assets[0]!, assets, baselineEvents, researchPeriod, outOfSamplePeriod, config,
+    ),
+    marketRegimes: summarizeMarketRegimes(
+      portfolioOutOfSampleResult.trades,
+      btc?.candles1d ?? [],
+    ),
+    parameterSensitivity: thresholds.map((minimumScore) => {
+      const strategyVersion = minimumScore === 70
+        ? TREND_PULLBACK_V1.version
+        : `${TREND_PULLBACK_V1.version}-score-${minimumScore}`;
+      const events = minimumScore === 70
+        ? baselineEvents
+        : applyEntryScoreThreshold(candidateEvents, minimumScore, strategyVersion);
+      const result = minimumScore === 70
+        ? portfolioResearchResult
+        : toPeriodResult(assets, events, researchPeriod, config);
+      return {
+        minimumScore,
+        strategyVersion,
+        evaluationScope: "research-only",
+        period: researchPeriod,
+        metrics: result.metrics,
+      };
+    }),
+  };
+}
+
 function profitFactorAtLeast(value: number | "infinite" | null, threshold: number): boolean {
   return value === "infinite" || (typeof value === "number" && value >= threshold);
 }
@@ -928,14 +1126,15 @@ export function runCryptoBacktest(
   for (const asset of assets) symbolWindows.set(asset.symbol, makeSymbolWindows(asset, requestedPeriod));
 
   const symbols: Partial<Record<SpotSymbol, BacktestSymbolResult>> = {};
-  const analysisEvents = new Map<SpotSymbol, readonly BacktestAnalysisEvent[]>();
+  const candidateEvents = new Map<SpotSymbol, readonly BacktestAnalysisEvent[]>();
   for (const asset of assets) {
     const [researchPeriod, outOfSamplePeriod] = symbolWindows.get(asset.symbol)!;
-    analysisEvents.set(asset.symbol, buildStrategyEvents(asset, {
+    candidateEvents.set(asset.symbol, buildStrategyEvents(asset, {
       startMs: researchPeriod.startMs,
       endMs: outOfSamplePeriod.endMs,
     }, config.initialCapital));
   }
+  const analysisEvents = applyEntryScoreThreshold(candidateEvents, 70, TREND_PULLBACK_V1.version);
   for (const asset of assets) {
     const [researchPeriod, outOfSamplePeriod] = symbolWindows.get(asset.symbol)!;
     symbols[asset.symbol] = {
@@ -952,14 +1151,41 @@ export function runCryptoBacktest(
     research: toPeriodResult(assets, analysisEvents, portfolioResearchPeriod, config),
     outOfSample: toPeriodResult(assets, analysisEvents, portfolioOutOfSamplePeriod, config),
   };
+  const robustness = buildRobustnessReport(
+    assets,
+    candidateEvents,
+    analysisEvents,
+    portfolioResearchPeriod,
+    portfolioOutOfSamplePeriod,
+    portfolio.research,
+    portfolio.outOfSample,
+    config,
+  );
   const outOfSample = portfolio.outOfSample.metrics;
+  // crypto-ai-analysis.VALIDATION.14-2
+  const validityChecks = {
+    closedCandlesOnly: assets.every((asset) =>
+      [...asset.candles1h, ...asset.candles4h, ...asset.candles1d]
+        .filter((candle) => candle.closeTimeMs <= requestedPeriod.endMs)
+        .every((candle) => candle.isClosed),
+    ),
+    nextBarExecution: [...candidateEvents.values()].flat().every((event) =>
+      !event.signal || (event.signal.confirmedAtMs === event.timeMs &&
+        event.signal.validFromMs === event.signal.confirmedAtMs + 1),
+    ),
+    deterministicEngine: false,
+  };
+  const deterministicReplay = simulateSpotExecution(assets, analysisEvents, portfolioOutOfSamplePeriod, config);
+  validityChecks.deterministicEngine = JSON.stringify({ period: portfolio.outOfSample.period, ...deterministicReplay }) ===
+    JSON.stringify(portfolio.outOfSample);
   const perSymbolProfitFactorCount = countSymbolsMeetingProfitFactor(
     assets,
     analysisEvents,
     portfolioOutOfSamplePeriod,
     config,
   );
-  const researchUsable = assets.length === SUPPORTED_SPOT_SYMBOLS.length &&
+  const validityPassed = Object.values(validityChecks).every(Boolean);
+  const researchUsable = validityPassed && assets.length === SUPPORTED_SPOT_SYMBOLS.length &&
     assets.every((asset) => SUPPORTED_SPOT_SYMBOLS.includes(asset.symbol)) &&
     outOfSample.tradeCount >= 100 && profitFactorAtLeast(outOfSample.profitFactor, 1.1) &&
     outOfSample.maxDrawdownPct <= 25 && outOfSample.netReturnPct > 0 &&
@@ -967,18 +1193,17 @@ export function runCryptoBacktest(
 
   return {
     strategyVersion: TREND_PULLBACK_V1.version,
-    status: researchUsable ? "research-usable" : "experimental",
-    statusReason: researchUsable
+    status: !validityPassed ? "invalid" : researchUsable ? "research-usable" : "experimental",
+    statusReason: !validityPassed
+      ? "回测有效性检查未通过，结果无效，不可用于模拟订单。"
+      : researchUsable
       ? "样本外组合达到继续模拟研究的门槛；这不代表适合真实交易或保证未来收益。"
       : "样本外结果未达到全部研究可用门槛，或样本量不足；仅供继续验证。",
     generatedAtMs: requestedPeriod.endMs,
     requestedPeriod,
     symbols,
     portfolio,
-    validityChecks: {
-      closedCandlesOnly: true,
-      nextBarExecution: true,
-      deterministicEngine: true,
-    },
+    robustness,
+    validityChecks,
   };
 }

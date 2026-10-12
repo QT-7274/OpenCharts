@@ -312,6 +312,7 @@ export interface StrategyEvaluationInput {
   dataComplete?: boolean;
   riskReward?: number | null;
   entryPlanStatus?: EntryPlanStatus | null;
+  minimumEntryScore?: number;
   pullbackAssessment?: PullbackAssessment;
   hourlyConfirmation?: HourlyConfirmation;
 }
@@ -824,7 +825,7 @@ export function evaluateStrategy(input: StrategyEvaluationInput): StrategyEvalua
     state = "setup";
   } else if (!hourlyConfirmation.passed && entryPlanStatus !== "active") {
     state = "setup";
-  } else if (scoreBreakdown.total < 70) {
+  } else if (scoreBreakdown.total < (input.minimumEntryScore ?? 70)) {
     state = "avoid";
     avoidReason = "confirmation-score-insufficient";
   } else if (riskReward == null || riskReward < 2) {

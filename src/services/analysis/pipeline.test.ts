@@ -223,11 +223,20 @@ describe("analysis trigger and as-of pipeline", () => {
     });
     expect(insufficientReward).toMatchObject({ state: "avoid", avoidReason: "risk-reward-insufficient" });
 
-    vi.mocked(rest.getSpotQuote).mockResolvedValue({ price: 170, tradeTimeMs: AT, serverTimeMs: AT });
-    const auto = await makePipeline(rest).onHourlyClose(byInterval["1h"].at(-1)!);
-    expect(auto?.currentPrice).toBe(170);
+    const hourlyRest = adapter({
+      getSpotQuote: vi.fn().mockResolvedValue({ price: 170, tradeTimeMs: AT, serverTimeMs: AT }),
+      getCandles: vi.fn().mockImplementation(async ({ interval, startTimeMs }: {
+        interval: SpotInterval;
+        startTimeMs?: number;
+      }) => startTimeMs == null
+        ? byInterval[interval]
+        : byInterval[interval].filter((row) => row.openTimeMs >= startTimeMs)),
+    });
+    const auto = await makePipeline(hourlyRest).onHourlyClose(byInterval["1h"].at(-1)!);
+    expect(auto?.currentPrice).toBe(byInterval["1h"].at(-1)?.close);
     expect(auto?.entryPlan?.status).toBe("waiting-for-price");
     expect(auto?.strategy?.state).toBe("setup");
+    expect(hourlyRest.getSpotQuote).not.toHaveBeenCalled();
   });
 
   it("crypto-ai-analysis.CANDLE_QUALITY.1 crypto-ai-analysis.CANDLE_QUALITY.3-1 crypto-ai-analysis.CANDLE_QUALITY.3-2 records manual Binance server time and actual close times", async () => {
@@ -255,7 +264,7 @@ describe("analysis trigger and as-of pipeline", () => {
     expect(first?.trigger).toBe("hourly-close");
     expect(first?.analysisTimeMs).toBe(event.closeTimeMs);
     expect(first?.currentPrice).toBe(event.close);
-    expect(rest.getSpotQuote).toHaveBeenCalledWith("BTCUSDT");
+    expect(rest.getSpotQuote).not.toHaveBeenCalled();
     expect(await pipeline.onHourlyClose(event)).toBe(first);
     expect(rest.getCandles).toHaveBeenCalledTimes(3);
     expect(await pipeline.onHourlyClose({ ...event, isClosed: false })).toBeNull();

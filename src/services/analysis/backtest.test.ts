@@ -116,6 +116,27 @@ function flatHistory(symbol: SpotSymbol = "BTCUSDT"): BacktestAssetData {
 }
 
 describe("crypto historical report", () => {
+  it("crypto-ai-analysis.VALIDATION.6 emits real confirmed strategy signals before later execution", () => {
+    const candles1h = Array.from({ length: 252 * 24 }, (_, index) => {
+      const mid = 100 + index * 0.002;
+      const close = mid + Math.sin(index * Math.PI / 6) * 0.05;
+      return bar("1h", START + index * HOUR, {
+        open: close - 0.001, close, high: mid + 1, low: mid - 1,
+      });
+    });
+    const aggregate = (interval: SpotInterval, size: number) => Array.from({ length: candles1h.length / size }, (_, index) => {
+      const rows = candles1h.slice(index * size, (index + 1) * size);
+      return bar(interval, rows[0]!.openTimeMs, {
+        open: rows[0]!.open, close: rows.at(-1)!.close,
+        high: Math.max(...rows.map((row) => row.high)), low: Math.min(...rows.map((row) => row.low)),
+      });
+    });
+    const report = runCryptoBacktest([{
+      symbol: "BTCUSDT", candles1h, candles4h: aggregate("4h", 4), candles1d: aggregate("1d", 24),
+    }], CONFIG, { startMs: START, endMs: START + 252 * DAY - 1 });
+    expect(report.portfolio.research.metrics.signalCount, JSON.stringify(report.portfolio.research.metrics.strategyStateCounts)).toBeGreaterThan(0);
+    expect(report.portfolio.research.metrics.tradeCount).toBeGreaterThan(0);
+  });
   it("crypto-ai-analysis.VALIDATION.4-1 crypto-ai-analysis.VALIDATION.5 excludes warmup and splits chronologically", () => {
     const report = runCryptoBacktest([flatHistory()], CONFIG, { startMs: START, endMs: START + 252 * DAY - 1 });
     expect(report.symbols.BTCUSDT!.research.period).toEqual({ startMs: START + 250 * DAY, endMs: START + 250 * DAY + 33 * HOUR - 1 });

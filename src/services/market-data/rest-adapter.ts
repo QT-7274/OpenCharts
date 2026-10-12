@@ -56,7 +56,7 @@ function trimTrailingSlash(value: string): string {
 
 function configuredBaseUrl(): string {
   return trimTrailingSlash(
-    import.meta.env.VITE_BINANCE_REST_BASE_URL || DEFAULT_BINANCE_REST_BASE_URL,
+    import.meta.env?.VITE_BINANCE_REST_BASE_URL || DEFAULT_BINANCE_REST_BASE_URL,
   );
 }
 
