@@ -342,6 +342,46 @@ describe("analysis trigger and as-of pipeline", () => {
     expect(restored[0]).not.toHaveProperty("windows");
   });
 
+  it("crypto-ai-analysis.FORWARD_SIMULATION.10-1 serves durable snapshots beyond the memory window", async () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    const options = {
+      restAdapter: adapter(),
+      storage,
+      getRiskContext: () => ({ accountEquity: 100_000, availableQuoteBalance: 100_000 }),
+      getHealth: () => ({ state: "live" as const, serverTimeMs: AT, lastMessageAtMs: AT,
+        lastClosedCandleAtMs: AT, missingRanges: [] }),
+    };
+    await createAnalysisPipeline(options).runManual("BTCUSDT");
+    const saved = JSON.parse(values.get("opencharts.analysis.attempts.v1")!) as Array<Record<string, unknown>>;
+    values.set("opencharts.analysis.attempts.v1", JSON.stringify(Array.from({ length: 101 }, (_, index) => ({
+      ...saved[0], snapshotId: `snapshot-${index}`,
+    }))));
+
+    const restored = createAnalysisPipeline(options);
+
+    expect(restored.getHistory()).toHaveLength(100);
+    expect(restored.getRecords()).toHaveLength(101);
+    expect(restored.getRecords()[0]?.snapshotId).toBe("snapshot-0");
+  });
+
+  it("crypto-ai-analysis.FORWARD_SIMULATION.10-1 excludes snapshots that failed durable persistence", async () => {
+    const pipeline = createAnalysisPipeline({
+      restAdapter: adapter(),
+      storage: { getItem: () => null, setItem: () => { throw new Error("disk unavailable"); } },
+      getRiskContext: () => ({ accountEquity: 100_000, availableQuoteBalance: 100_000 }),
+      getHealth: () => ({ state: "live" as const, serverTimeMs: AT, lastMessageAtMs: AT,
+        lastClosedCandleAtMs: AT, missingRanges: [] }),
+    });
+
+    await pipeline.runManual("BTCUSDT");
+
+    expect(pipeline.getRecords()).toHaveLength(0);
+  });
+
   it("crypto-ai-analysis.ANALYSIS_SNAPSHOT.1 crypto-ai-analysis.ANALYSIS_SNAPSHOT.3 persists the explanation with its algorithm snapshot", async () => {
     const values = new Map<string, string>();
     const storage = {

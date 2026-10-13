@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { BACKTEST_RECORD_KEY } from "./backtest-persistence.mjs";
 import { BacktestJobError } from "./backtest-jobs.mjs";
+import { resolveCurrentPersistedAnalysisAttempt } from "./analysis-snapshot-resolver.mjs";
 import { createForwardSimulationApi, listenForwardSimulationApi } from "./forward-simulation-api.mjs";
 
 const servers = [];
@@ -232,6 +233,18 @@ test("crypto-ai-analysis.FORWARD_SIMULATION.10-1 resolves analysis and backtest 
   });
   assert.equal(response.status, 409);
   assert.equal(api.calls.length, 0);
+});
+
+test("crypto-ai-analysis.FORWARD_SIMULATION.10-1 resolves only the latest durable snapshot", () => {
+  const oldSnapshot = { snapshotId: "snapshot-old", symbol: "BTCUSDT" };
+  const currentSnapshot = { snapshotId: "snapshot-current", symbol: "BTCUSDT" };
+  const pipeline = {
+    getHistory: () => [currentSnapshot],
+    getRecords: () => [oldSnapshot, currentSnapshot],
+  };
+
+  assert.equal(resolveCurrentPersistedAnalysisAttempt(pipeline, "snapshot-old"), null);
+  assert.equal(resolveCurrentPersistedAnalysisAttempt(pipeline, "snapshot-current"), currentSnapshot);
 });
 
 test("crypto-ai-analysis.FORWARD_SIMULATION.10-1 refuses drafts when the persisted backtest status is invalid", async () => {

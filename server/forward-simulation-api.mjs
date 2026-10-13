@@ -150,6 +150,7 @@ export function createForwardSimulationApi({
 
     try {
       if (request.method === "GET" && url.pathname === `${PREFIX}/health`) {
+        // crypto-ai-analysis.LONG_RUNNING.3
         const runtime = getRuntimeStatus();
         const healthy = runtime?.ready === true && runtime?.storageStatus !== "error" && !ledger.getRuntimeError();
         sendJson(response, healthy ? 200 : 503, {

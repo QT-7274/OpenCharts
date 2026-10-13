@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createAtomicFileStorage } from "./file-storage.mjs";
 import { createForwardSimulationApi, listenForwardSimulationApi } from "./forward-simulation-api.mjs";
+import { resolveCurrentPersistedAnalysisAttempt } from "./analysis-snapshot-resolver.mjs";
 import { createBacktestJobRunner } from "./backtest-jobs.mjs";
 import { createAgentDomain } from "./agent-domain.mjs";
 import { SUPPORTED_SPOT_SYMBOLS } from "../src/services/market-data/types.ts";
@@ -69,9 +70,7 @@ const api = createForwardSimulationApi({
     return analysisPipeline.runManual(symbol);
   },
   // crypto-ai-analysis.FORWARD_SIMULATION.10-1
-  // Resolve only records restored or written by the server-side analysis pipeline.
-  getAnalysisAttempt: (snapshotId) => analysisPipeline.getHistory()
-    .find((attempt) => attempt.snapshotId === snapshotId) ?? null,
+  getAnalysisAttempt: (snapshotId) => resolveCurrentPersistedAnalysisAttempt(analysisPipeline, snapshotId),
   getRuntimeStatus: () => ({
     ...runtime.getStatus(),
     dataPath,

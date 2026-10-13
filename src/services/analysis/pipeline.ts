@@ -174,6 +174,7 @@ export function createAnalysisPipeline({ restAdapter, getHealth, getRiskContext,
   const activePlans = new Map<SpotSymbol, EntryPlan>();
   const restoredAtMs = now();
   let records: AnalysisAttemptRecord[] = [];
+  const persistedRecords = new Map<string, AnalysisAttemptRecord>();
   let lifecycleChangedDuringRestore = false;
   // crypto-ai-analysis.ENTRY_PLAN.6
   try {
@@ -223,6 +224,10 @@ export function createAnalysisPipeline({ restAdapter, getHealth, getRiskContext,
     // Private browsing or malformed prior storage should not prevent analysis.
   }
 
+  for (const record of records) {
+    if (record.snapshotId) persistedRecords.set(record.snapshotId, record);
+  }
+
   history.push(...records.slice(-IN_MEMORY_HISTORY_LIMIT).map((record): AnalysisAttempt => ({
     ...record,
     windows: { "1d": [], "4h": [], "1h": [] },
@@ -241,6 +246,10 @@ export function createAnalysisPipeline({ restAdapter, getHealth, getRiskContext,
   if (lifecycleChangedDuringRestore) {
     try {
       storage?.setItem(HISTORY_KEY, JSON.stringify(records));
+      persistedRecords.clear();
+      for (const record of records) {
+        if (record.snapshotId) persistedRecords.set(record.snapshotId, record);
+      }
     } catch {
       // Keep the restored expiration in memory when browser storage is unavailable.
     }
@@ -268,6 +277,7 @@ export function createAnalysisPipeline({ restAdapter, getHealth, getRiskContext,
     else records.push(summary);
     try {
       storage?.setItem(HISTORY_KEY, JSON.stringify(records));
+      if (snapshotId) persistedRecords.set(snapshotId, summary);
     } catch {
       recorded.persistenceError = "analysis-snapshot";
       history[history.length - 1] = recorded;
@@ -306,6 +316,7 @@ export function createAnalysisPipeline({ restAdapter, getHealth, getRiskContext,
     updated = persistableUpdate;
     try {
       storage?.setItem(HISTORY_KEY, JSON.stringify(records));
+      if (snapshotId) persistedRecords.set(snapshotId, updatedRecord);
     } catch {
       updated = { ...updated, persistenceError: "ai-explanation" };
     }
@@ -555,7 +566,7 @@ export function createAnalysisPipeline({ restAdapter, getHealth, getRiskContext,
       return () => listeners.delete(listener);
     },
     getHistory: () => [...history],
-    getRecords: () => [...records],
+    getRecords: () => [...persistedRecords.values()],
     getLatest: (symbol: SpotSymbol) => [...history].reverse().find((attempt) => attempt.symbol === symbol) ?? null,
   };
 }
