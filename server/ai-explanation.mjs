@@ -165,13 +165,45 @@ function textFields(explanation) {
   ];
 }
 
-// crypto-ai-analysis.AI_EXPLANATION.2 crypto-ai-analysis.AI_EXPLANATION.6
+function sanitizeRawResponse(value, depth = 0) {
+  if (depth > 4 || value == null) return value == null ? null : "[redacted]";
+  if (typeof value === "string") {
+    return value
+      .replace(/[\r\n]+/g, " ")
+      .replace(/(?:Bearer\s+|(?:api[_-]?key|token|secret|password|authorization)\s*[=:]\s*)[^\s,;]+/gi, "[redacted]")
+      .replace(/(?:file:\/\/|\/(?:Users|home|private|tmp|var)\/|[A-Za-z]:\\)[^\s]+/g, "[redacted-path]")
+      .slice(0, 1_000);
+  }
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.slice(0, 20).map((item) => sanitizeRawResponse(item, depth + 1));
+  if (typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).slice(0, 40)
+      .filter(([key]) => !/(?:secret|token|password|authorization|credential|api[_-]?key)/iu.test(key))
+      .map(([key, item]) => [key, sanitizeRawResponse(item, depth + 1)]));
+  }
+  return "[redacted]";
+}
+
+function violatesNonEnterPolicy(input, explanation) {
+  if (input?.strategy?.state === "enter") return false;
+  const forbidden = [
+    /(?:入场(?:价|区间)?|进场(?:价|区间)?|买入价|做多|entry(?:\s+price)?|buy|long|止损价|止盈价|目标价|take.?profit|stop)\s*(?:为|是|在|at|=|:)?\s*[-+]?\d/iu,
+    /(?:替代|直接|立即|提前|追涨|绕过|忽略|放宽|无视|不必等待).{0,40}(?:入场|进场|买入|做多|止损|止盈|目标|entry|buy|long|stop|take)/iu,
+    /(?<!不)(?:建议|推荐|可以)\s*(?:立即|直接|现在|当前|提前|追涨)?\s*(?:入场|进场|买入|做多|entry|buy|long)/iu,
+  ];
+  return textFields(explanation).some((text) => forbidden.some((pattern) => pattern.test(text)));
+}
+
+// crypto-ai-analysis.AI_EXPLANATION.1 crypto-ai-analysis.AI_EXPLANATION.2 crypto-ai-analysis.AI_EXPLANATION.5-1 crypto-ai-analysis.AI_EXPLANATION.6 crypto-ai-analysis.AI_EXPLANATION.7
 export function validateAiExplanation(input, value) {
   const parsed = aiExplanationSchema.safeParse(value);
   if (!parsed.success) return { valid: false, reason: "schema-validation-failed", explanation: null };
 
   if (!validateAiExplanationNumbers(input, textFields(parsed.data))) {
     return { valid: false, reason: "numeric-validation-failed", explanation: null };
+  }
+  if (violatesNonEnterPolicy(input, parsed.data)) {
+    return { valid: false, reason: "non-enter-policy-violation", explanation: null };
   }
   return { valid: true, reason: null, explanation: parsed.data };
 }
@@ -291,7 +323,7 @@ function unavailableRecord({ modelId, requestedAtMs, respondedAtMs, failureReaso
     requestedAtMs,
     respondedAtMs,
     tokenUsage: null,
-    rawResponse,
+    rawResponse: sanitizeRawResponse(rawResponse),
     validationResult: "unavailable",
     failureReason,
     explanation: null,
@@ -400,7 +432,7 @@ export function createAiExplanationService({
               requestedAtMs: result.requestedAtMs ?? startedAtMs,
               respondedAtMs: result.respondedAtMs ?? now(),
               tokenUsage: result.tokenUsage ?? null,
-              rawResponse: result.rawResponse ?? result.explanation,
+              rawResponse: sanitizeRawResponse(result.rawResponse ?? result.explanation),
               validationResult: "valid",
               failureReason: null,
               explanation: validation.explanation,
@@ -411,7 +443,7 @@ export function createAiExplanationService({
                 requestedAtMs: result.requestedAtMs ?? startedAtMs,
                 respondedAtMs: result.respondedAtMs ?? now(),
                 failureReason: validation.reason,
-                rawResponse: result.rawResponse ?? result.explanation,
+                rawResponse: sanitizeRawResponse(result.rawResponse ?? result.explanation),
               }),
               status: "invalid",
               validationResult: "invalid",

@@ -196,6 +196,27 @@ test("crypto-ai-analysis.BACKTEST_JOBS.3 crypto-ai-analysis.BACKTEST_JOBS.6 maps
   assert.deepEqual(await runningReport.json(), { error: "Backtest report is not available for this task" });
 });
 
+test("crypto-ai-analysis.BACKTEST_JOBS.7 hides internal task query errors", async () => {
+  const api = await startApi({
+    backtestJobs: {
+      get() {
+        throw new Error("ENOENT /Users/shizheng/private/backtest.json OPENAI_API_KEY=super-secret");
+      },
+      getReport() {
+        throw new Error("ENOENT /private/tmp/report.json");
+      },
+    },
+  });
+
+  const taskResponse = await fetch(`${api.baseUrl}/api/forward-sim/backtest-jobs/task-1`);
+  assert.equal(taskResponse.status, 500);
+  assert.deepEqual(await taskResponse.json(), { error: "Backtest job query failed" });
+
+  const reportResponse = await fetch(`${api.baseUrl}/api/forward-sim/backtest-jobs/task-1/report`);
+  assert.equal(reportResponse.status, 500);
+  assert.deepEqual(await reportResponse.json(), { error: "Backtest job query failed" });
+});
+
 test("crypto-ai-analysis.FORWARD_SIMULATION.8 requires a prepared draft before confirmation", async () => {
   const api = await startApi();
   const draftResponse = await fetch(`${api.baseUrl}/api/forward-sim/drafts`, {

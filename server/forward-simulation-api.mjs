@@ -27,6 +27,19 @@ function sendJson(response, status, value) {
   response.end(body);
 }
 
+// crypto-ai-analysis.BACKTEST_JOBS.7
+function sendBacktestJobQueryError(response, error) {
+  if (error instanceof BacktestJobError && error.statusCode === 404) {
+    sendJson(response, 404, { error: "Backtest task not found" });
+    return;
+  }
+  if (error instanceof BacktestJobError && error.statusCode === 409) {
+    sendJson(response, 409, { error: "Backtest report is not available for this task" });
+    return;
+  }
+  sendJson(response, 500, { error: "Backtest job query failed" });
+}
+
 async function readJson(request) {
   const chunks = [];
   let size = 0;
@@ -194,7 +207,11 @@ export function createForwardSimulationApi({
           sendJson(response, 503, { error: "Backtest job service is unavailable" });
           return;
         }
-        sendJson(response, 200, backtestJobs.getReport(decodeURIComponent(backtestReportMatch[1])));
+        try {
+          sendJson(response, 200, backtestJobs.getReport(decodeURIComponent(backtestReportMatch[1])));
+        } catch (error) {
+          sendBacktestJobQueryError(response, error);
+        }
         return;
       }
       const backtestTaskMatch = url.pathname.match(new RegExp(`^${PREFIX}/backtest-jobs/([^/]+)$`));
@@ -203,7 +220,11 @@ export function createForwardSimulationApi({
           sendJson(response, 503, { error: "Backtest job service is unavailable" });
           return;
         }
-        sendJson(response, 200, { task: backtestJobs.get(decodeURIComponent(backtestTaskMatch[1])) });
+        try {
+          sendJson(response, 200, { task: backtestJobs.get(decodeURIComponent(backtestTaskMatch[1])) });
+        } catch (error) {
+          sendBacktestJobQueryError(response, error);
+        }
         return;
       }
       if (request.method === "GET" && url.pathname === `${PREFIX}/state`) {

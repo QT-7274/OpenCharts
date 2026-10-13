@@ -92,6 +92,64 @@ describe("crypto-ai-analysis.AI_EXPLANATION.5 and crypto-ai-analysis.AI_EXPLANAT
   });
 });
 
+describe("crypto-ai-analysis.AI_EXPLANATION.7 and crypto-ai-analysis.ANALYSIS_SNAPSHOT.1-1", () => {
+  it("allows a non-enter explanation to describe waiting without creating a replacement entry", () => {
+    const avoidSnapshot = {
+      ...snapshot,
+      strategy: { ...snapshot.strategy, state: "avoid" as const, avoidReason: "trend-not-confirmed" },
+    };
+    expect(validateAiExplanation(avoidSnapshot, {
+      ...explanation,
+      summary: "当前条件不足，暂不入场。",
+      trendExplanation: "等待多头条件重新建立。",
+      indicatorEvidence: ["指标尚未形成确认。"],
+      entryExplanation: "当前不建议入场，继续等待。",
+      riskExplanation: "风险参数仅用于研究观察。",
+      cautionNotes: ["不要追价。"],
+      educationalNotes: ["仅供研究。"],
+    }).valid).toBe(true);
+  });
+
+  it("rejects replacement entry prices and bypass advice when the strategy is not enter", () => {
+    const avoidSnapshot = {
+      ...snapshot,
+      strategy: { ...snapshot.strategy, state: "avoid" as const, avoidReason: "trend-not-confirmed" },
+    };
+    expect(validateAiExplanation(avoidSnapshot, {
+      ...explanation,
+      summary: "虽然条件不足，但可以在 99 入场。",
+    })).toMatchObject({ valid: false, reason: "non-enter-policy-violation", explanation: null });
+    expect(validateAiExplanation(avoidSnapshot, {
+      ...explanation,
+      summary: "建议入场，等待价格确认。",
+    })).toMatchObject({ valid: false, reason: "non-enter-policy-violation", explanation: null });
+    expect(validateAiExplanation(avoidSnapshot, {
+      ...explanation,
+      summary: "可以绕过确认条件直接买入。",
+    })).toMatchObject({ valid: false, reason: "non-enter-policy-violation", explanation: null });
+  });
+
+  it("redacts credentials and local paths before persisting raw provider output", async () => {
+    const provider = {
+      explain: vi.fn().mockResolvedValue({
+        explanation,
+        modelId: "gpt-6-luna",
+        rawResponse: {
+          apiKey: "OPENAI_API_KEY=super-secret",
+          nested: { authorization: "Bearer secret-token", trace: "file:///Users/shizheng/private.json" },
+        },
+      }),
+    };
+    const service = createAiExplanationService({ provider, now: () => Date.UTC(2026, 9, 8) });
+
+    const result = await service.explain(snapshot);
+
+    expect(result.status).toBe("available");
+    expect(JSON.stringify(result.rawResponse)).not.toMatch(/super-secret|secret-token|\/Users\/shizheng/);
+    expect(result.rawResponse).toEqual({ nested: { trace: "[redacted-path]" } });
+  });
+});
+
 describe("crypto-ai-analysis.AI_EXPLANATION.3-1, crypto-ai-analysis.AI_EXPLANATION.5 and crypto-ai-analysis.AI_EXPLANATION.9-2", () => {
   it("sends a strict Responses request without storage or tools", async () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
