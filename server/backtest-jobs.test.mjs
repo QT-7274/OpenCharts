@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKTEST_JOBS_KEY, BACKTEST_STRATEGY_VERSION, BacktestJobError, createBacktestJobRunner } from "./backtest-jobs.mjs";
+import { BACKTEST_RECORD_KEY } from "./backtest-persistence.mjs";
 
 const COSTS = { buyFeeRate: 0.001, sellFeeRate: 0.001, buySlippageRate: 0.0005, sellSlippageRate: 0.0005 };
 const REPORT = { strategyVersion: BACKTEST_STRATEGY_VERSION, generatedAtMs: 10, requestedPeriod: { startMs: 1, endMs: 2 }, costAssumptions: COSTS };
@@ -87,4 +88,63 @@ test("crypto-ai-analysis.BACKTEST_JOBS.3 crypto-ai-analysis.BACKTEST_JOBS.5 keep
   assert.equal(runner.get(second.taskId).status, "failed");
   assert.equal(runner.getReport(first.taskId).report.strategyVersion, BACKTEST_STRATEGY_VERSION);
   assert.equal(runner.getLatestBacktestStatus().status, "invalid");
+});
+
+test("crypto-ai-analysis.BACKTEST_JOBS.5 keeps a newer manual report visible beside an older async task", async () => {
+  const values = new Map();
+  let clock = 0;
+  const runner = createBacktestJobRunner({
+    storage: storageWith(values),
+    now: () => ++clock,
+    loadHistory: async () => ({ assets: [], requestedPeriod: { startMs: 1, endMs: 2 } }),
+    runBacktest: () => REPORT,
+  });
+  const task = runner.create();
+  await runner.waitForIdle();
+
+  values.set(BACKTEST_RECORD_KEY, JSON.stringify({
+    status: "invalid",
+    strategyVersion: BACKTEST_STRATEGY_VERSION,
+    costAssumptions: COSTS,
+    updatedAtMs: clock + 10,
+    reportGeneratedAtMs: null,
+    taskId: null,
+    statusReason: "manual report validation failed",
+    report: null,
+  }));
+
+  const status = runner.getLatestBacktestStatus();
+  assert.equal(runner.get(task.taskId).status, "completed");
+  assert.equal(status.status, "invalid");
+  assert.equal(status.taskId, null);
+  assert.equal(status.statusReason, "manual report validation failed");
+});
+
+test("crypto-ai-analysis.BACKTEST_JOBS.5 rejects a newer shared record from another strategy", async () => {
+  const values = new Map();
+  let clock = 0;
+  const runner = createBacktestJobRunner({
+    storage: storageWith(values),
+    now: () => ++clock,
+    loadHistory: async () => ({ assets: [], requestedPeriod: { startMs: 1, endMs: 2 } }),
+    runBacktest: () => REPORT,
+  });
+  const task = runner.create();
+  await runner.waitForIdle();
+
+  values.set(BACKTEST_RECORD_KEY, JSON.stringify({
+    status: "invalid",
+    strategyVersion: "trend-pullback-v2",
+    costAssumptions: COSTS,
+    updatedAtMs: clock + 10,
+    reportGeneratedAtMs: null,
+    taskId: null,
+    statusReason: "foreign strategy",
+    report: null,
+  }));
+
+  const status = runner.getLatestBacktestStatus();
+  assert.equal(status.status, "invalid");
+  assert.equal(status.taskId, task.taskId);
+  assert.match(status.statusReason, /unavailable/);
 });

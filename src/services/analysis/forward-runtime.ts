@@ -10,7 +10,7 @@ interface ForwardRuntimeOptions {
 }
 
 // crypto-ai-analysis.FORWARD_SIMULATION.4 crypto-ai-analysis.FORWARD_SIMULATION.10
-// crypto-ai-analysis.RELIABILITY.1 crypto-ai-analysis.RELIABILITY.3
+// crypto-ai-analysis.RELIABILITY.1 crypto-ai-analysis.RELIABILITY.3 crypto-ai-analysis.LONG_RUNNING.1
 export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.now }: ForwardRuntimeOptions) {
   let stopped = false;
   let recovering = false;
@@ -20,6 +20,9 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
   let runtimeFailure: string | null = null;
   let lastSuccessfullyProcessedAtMs: number | null = null;
   const bufferedClosedCandles = new Map<string, Parameters<typeof ledger.processClosedCandle>[0]>();
+  const queuedClosedCandles: Array<Parameters<typeof ledger.processClosedCandle>[0]> = [];
+  let processingQueuedCandles = false;
+  let drainScheduled = false;
   const stopWaiters: Array<() => void> = [];
   const hourMs = intervalToMs("1h");
 
@@ -33,15 +36,46 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
     try { ledger.pauseSymbol(symbol, runtimeFailure); } catch { /* Storage errors remain visible in status. */ }
   }
 
+  function compareCandles(
+    a: Parameters<typeof ledger.processClosedCandle>[0],
+    b: Parameters<typeof ledger.processClosedCandle>[0],
+  ): number {
+    return a.openTimeMs - b.openTimeMs || a.symbol.localeCompare(b.symbol);
+  }
+
+  async function drainClosedCandles(): Promise<void> {
+    if (processingQueuedCandles) return;
+    processingQueuedCandles = true;
+    try {
+      while (queuedClosedCandles.length) {
+        queuedClosedCandles.sort(compareCandles);
+        const candle = queuedClosedCandles.shift()!;
+        try {
+          await ledger.processClosedCandle(candle, restAdapter);
+          if (!ledger.getState().pausedSymbols[candle.symbol] && !ledger.getRuntimeError()) {
+            lastSuccessfullyProcessedAtMs = Math.max(lastSuccessfullyProcessedAtMs ?? 0, candle.closeTimeMs);
+          }
+        } catch (error: unknown) {
+          fail(candle.symbol, error);
+        } finally {
+          pending -= 1;
+          resolveStopWaiters();
+        }
+      }
+    } finally {
+      processingQueuedCandles = false;
+      resolveStopWaiters();
+    }
+  }
+
   function processCandle(candle: Parameters<typeof ledger.processClosedCandle>[0]): void {
     pending += 1;
-    void ledger.processClosedCandle(candle, restAdapter).then(() => {
-      if (!ledger.getState().pausedSymbols[candle.symbol] && !ledger.getRuntimeError()) {
-        lastSuccessfullyProcessedAtMs = Math.max(lastSuccessfullyProcessedAtMs ?? 0, candle.closeTimeMs);
-      }
-    }).catch((error: unknown) => fail(candle.symbol, error)).finally(() => {
-      pending -= 1;
-      resolveStopWaiters();
+    queuedClosedCandles.push(candle);
+    if (drainScheduled) return;
+    drainScheduled = true;
+    queueMicrotask(() => {
+      drainScheduled = false;
+      void drainClosedCandles();
     });
   }
 
@@ -51,7 +85,7 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
 
   function flushBufferedCandles(): void {
     const candles = [...bufferedClosedCandles.values()]
-      .sort((a, b) => a.openTimeMs - b.openTimeMs || a.symbol.localeCompare(b.symbol));
+      .sort(compareCandles);
     bufferedClosedCandles.clear();
     for (const candle of candles) processCandle(candle);
   }

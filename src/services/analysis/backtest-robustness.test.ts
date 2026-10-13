@@ -91,6 +91,58 @@ describe("backtest robustness report", () => {
     }, CONFIG, { includeOpeningSignal: true });
 
     expect(result.metrics.tradeCount).toBe(1);
+    expect(result.metrics.signalCount).toBe(1);
+    expect(result.metrics.strategyStateCounts.enter).toBe(1);
+    expect(result.trades[0]?.entryTimeMs).toBe(testOpen);
+  });
+
+  it("crypto-ai-analysis.VALIDATION.15-3 carries an older still-valid plan past an intermediate setup event", () => {
+    const testOpen = START + 30 * HOUR;
+    const priorEvent: BacktestAnalysisEvent = {
+      timeMs: testOpen - 2 * HOUR - 1,
+      state: "enter",
+      avoidReason: null,
+      pullbackLow: 95,
+      signal: {
+        symbol: "BTCUSDT",
+        confirmedAtMs: testOpen - 2 * HOUR - 1,
+        validFromMs: testOpen - 2 * HOUR,
+        expiresAtMs: testOpen + HOUR,
+        theoreticalEntryPrice: 100,
+        entryLower: 99,
+        entryUpper: 101,
+        stopPrice: 90,
+        takeProfit1Price: 120,
+        takeProfit2Price: 130,
+        riskReward: 2,
+        pullbackLow: 95,
+        score: 85,
+        strategyVersion: "trend-pullback-v1",
+      },
+    };
+    const setupEvent: BacktestAnalysisEvent = {
+      timeMs: testOpen - 1,
+      state: "setup",
+      avoidReason: null,
+      pullbackLow: 95,
+      signal: null,
+    };
+    const firstBar = candle("BTCUSDT", "1h", testOpen, 100);
+    const result = simulateSpotExecution([{
+      symbol: "BTCUSDT",
+      candles1h: [firstBar],
+      candles4h: [],
+      candles1d: [],
+    }], new Map([[
+      "BTCUSDT",
+      [priorEvent, setupEvent],
+    ]]), {
+      startMs: testOpen,
+      endMs: firstBar.closeTimeMs,
+    }, CONFIG, { includeOpeningSignal: true });
+
+    expect(result.metrics.signalCount).toBe(1);
+    expect(result.metrics.tradeCount).toBe(1);
     expect(result.trades[0]?.entryTimeMs).toBe(testOpen);
   });
 

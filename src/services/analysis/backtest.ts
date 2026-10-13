@@ -793,6 +793,11 @@ export function simulateSpotExecution(
     { timeMs: period.startMs, equity: config.initialCapital },
   ];
 
+  function recordAnalysisEvent(event: BacktestAnalysisEvent): void {
+    strategyStateCounts[event.state] += 1;
+    if (event.signal && event.state === "enter") signalCount += 1;
+  }
+
   function queueSignal(symbol: SpotSymbol, event: BacktestAnalysisEvent): void {
     if (!event.signal || event.state !== "enter") return;
     if (positions.has(symbol)) {
@@ -831,16 +836,23 @@ export function simulateSpotExecution(
   const openingSignals = options.includeOpeningSignal ? sortedAssets.flatMap((asset) => {
     const firstCandle = periodCandles(asset, period)[0];
     if (!firstCandle) return [];
-    const previousEvent = [...(analysisEvents.get(asset.symbol) ?? [])]
-      .filter((event) => event.timeMs === firstCandle.openTimeMs - 1)
-      .at(-1);
-    return previousEvent?.state === "enter" && previousEvent.signal &&
-      previousEvent.signal.validFromMs === firstCandle.openTimeMs &&
-      previousEvent.signal.expiresAtMs > firstCandle.openTimeMs
-      ? [{ symbol: asset.symbol, event: previousEvent }]
+    const priorEvents = [...(analysisEvents.get(asset.symbol) ?? [])]
+      .filter((event) => event.timeMs < firstCandle.openTimeMs)
+      .sort((a, b) => a.timeMs - b.timeMs);
+    const openingEvent = [...priorEvents].reverse().find((event) =>
+      event.state === "enter" && event.signal && event.signal.validFromMs <= firstCandle.openTimeMs &&
+      event.signal.expiresAtMs > firstCandle.openTimeMs &&
+      !priorEvents.some((later) => later.timeMs > event.timeMs && later.state === "avoid" &&
+        later.avoidReason !== "confirmation-score-insufficient"),
+    );
+    return openingEvent
+      ? [{ symbol: asset.symbol, event: openingEvent }]
       : [];
   }).sort((a, b) => a.event.timeMs - b.event.timeMs || a.symbol.localeCompare(b.symbol)) : [];
-  for (const item of openingSignals) queueSignal(item.symbol, item.event);
+  for (const item of openingSignals) {
+    recordAnalysisEvent(item.event);
+    queueSignal(item.symbol, item.event);
+  }
 
   for (const openTimeMs of times) {
     const bars = barsByTime.get(openTimeMs)!;
@@ -880,7 +892,7 @@ export function simulateSpotExecution(
     for (const asset of sortedAssets) {
       const event = eventsBySymbol.get(asset.symbol)?.get(eventTimeMs);
       if (!event) continue;
-      strategyStateCounts[event.state] += 1;
+      recordAnalysisEvent(event);
       const pendingOrder = pending.get(asset.symbol);
       if (pendingOrder && (event.state === "avoid" ||
         (event.pullbackLow != null && (bars.get(asset.symbol)?.close ?? Infinity) < event.pullbackLow))) {
@@ -888,7 +900,6 @@ export function simulateSpotExecution(
         addReason(skippedReasons, "entry-plan-invalidated");
       }
       if (!event.signal || event.state !== "enter") continue;
-      signalCount += 1;
       queueSignal(asset.symbol, event);
     }
 

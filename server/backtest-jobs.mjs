@@ -277,6 +277,12 @@ export function createBacktestJobRunner({
       const task = latestTaskId ? tasks.get(latestTaskId) : null;
       const record = readBacktestRecord(storage);
       if (!task) return record ? { ...record } : null;
+      // crypto-ai-analysis.BACKTEST_JOBS.5: a newer manual/UI report is the
+      // shared source of truth until a newer async task publishes its result.
+      if (record && record.taskId == null && record.strategyVersion === task.strategyVersion &&
+        record.updatedAtMs > task.updatedAtMs) {
+        return record;
+      }
       if (task.status !== "completed") {
         return createInvalidBacktestRecord(task.strategyVersion, task.updatedAtMs,
           task.errorSummary || `Backtest task ${task.status}`, { taskId: task.taskId });

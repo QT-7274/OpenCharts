@@ -141,6 +141,42 @@ describe("forward simulation runtime", () => {
     runtime.stop();
   });
 
+  it("crypto-ai-analysis.RELIABILITY.1 crypto-ai-analysis.LONG_RUNNING.1 serializes closed candles after recovery", async () => {
+    const stream = streamHarness();
+    const { ledger, processClosedCandle, pausedSymbols } = ledgerHarness();
+    const latestOpen = Math.floor(NOW / HOUR) * HOUR - HOUR;
+    let releaseFirst: (() => void) | undefined;
+    const firstProcessing = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    processClosedCandle.mockImplementation(async (row: MarketCandle) => {
+      delete pausedSymbols[row.symbol];
+      if (row.openTimeMs === latestOpen + HOUR) await firstProcessing;
+    });
+    const restAdapter = {
+      getServerTime: vi.fn(async () => NOW),
+      getCandles: vi.fn(async ({ symbol }: { symbol: typeof SUPPORTED_SPOT_SYMBOLS[number] }) => [makeCandle(symbol, latestOpen)]),
+    } as never;
+    const runtime = createForwardRuntime({ ledger, stream, restAdapter, now: () => NOW });
+
+    stream.setHealth({ state: "live", lastMessageAtMs: NOW });
+    await vi.waitFor(() => expect(runtime.getStatus().ready).toBe(true));
+
+    const first = makeCandle("BTCUSDT", latestOpen + HOUR);
+    const second = makeCandle("BTCUSDT", latestOpen + 2 * HOUR);
+    stream.emit(first);
+    stream.emit(second);
+    await Promise.resolve();
+
+    expect(processClosedCandle.mock.calls.filter(([row]) => row.openTimeMs === second.openTimeMs)).toHaveLength(0);
+    releaseFirst!();
+    await vi.waitFor(() => expect(processClosedCandle.mock.calls.filter(([row]) => row.openTimeMs === second.openTimeMs)).toHaveLength(1));
+
+    expect(processClosedCandle.mock.calls.map(([row]) => row.openTimeMs).slice(-2)).toEqual([
+      first.openTimeMs,
+      second.openTimeMs,
+    ]);
+    await runtime.stop();
+  });
+
   it("crypto-ai-analysis.LONG_RUNNING.3 waits for queued candle processing before stopping", async () => {
     const stream = streamHarness();
     const pausedSymbols: Record<string, string> = {};
