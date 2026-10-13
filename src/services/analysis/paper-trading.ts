@@ -108,6 +108,8 @@ export interface PaperOrderDraft {
   pullbackLow: number;
   quantity: number;
   riskAmount: number;
+  estimatedFees: number;
+  estimatedSlippage: number;
   estimatedCosts: number;
 }
 
@@ -269,10 +271,10 @@ function buildDraft(
     riskExposure(state) + riskAmount > portfolioRiskLimit + 1e-8) {
     throw new Error("模拟账户资金或单笔/组合风险限制不满足");
   }
-  const estimatedEntryCosts = quantity * (plan.entryUpper * costAssumptions.buySlippageRate +
-    plan.entryUpper * (1 + costAssumptions.buySlippageRate) * costAssumptions.buyFeeRate);
-  const estimatedExitCosts = quantity * (plan.stop * costAssumptions.sellSlippageRate +
-    plan.stop * (1 - costAssumptions.sellSlippageRate) * costAssumptions.sellFeeRate);
+  const estimatedFees = quantity * plan.entryUpper * (1 + costAssumptions.buySlippageRate) * costAssumptions.buyFeeRate +
+    quantity * plan.stop * (1 - costAssumptions.sellSlippageRate) * costAssumptions.sellFeeRate;
+  const estimatedSlippage = quantity * (plan.entryUpper * costAssumptions.buySlippageRate +
+    plan.stop * costAssumptions.sellSlippageRate);
   return {
     symbol: attempt.symbol,
     snapshotId: attempt.snapshotId!,
@@ -292,7 +294,9 @@ function buildDraft(
     pullbackLow: plan.pullbackLow,
     quantity,
     riskAmount,
-    estimatedCosts: estimatedEntryCosts + estimatedExitCosts,
+    estimatedFees,
+    estimatedSlippage,
+    estimatedCosts: estimatedFees + estimatedSlippage,
   };
 }
 

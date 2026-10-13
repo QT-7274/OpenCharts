@@ -136,6 +136,9 @@ describe("isolated crypto paper ledger", () => {
     const draft = ledger.createDraft(makeAttempt(), "experimental");
     expect(draft.quantity).toBeLessThanOrEqual(10);
     expect(draft.riskAmount).toBeLessThanOrEqual(100);
+    expect(draft.estimatedFees).toBeGreaterThan(0);
+    expect(draft.estimatedSlippage).toBeGreaterThan(0);
+    expect(draft.estimatedCosts).toBeCloseTo(draft.estimatedFees + draft.estimatedSlippage);
     expect(ledger.getState().orders).toHaveLength(0);
 
     const order = ledger.submitDraft(draft);

@@ -366,12 +366,13 @@ export function CryptoPaperPanel({ attempt }: { attempt: AnalysisAttempt }) {
           <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
             <div><dt>订单性质</dt><dd className="text-foreground">仅模拟 · 现货做多</dd></div>
             <div><dt>交易对</dt><dd className="font-mono text-foreground">{draft.symbol}</dd></div>
+            <div><dt>参考入场价</dt><dd className="font-mono text-foreground">{number(draft.referencePrice)}</dd></div>
             <div><dt>入场区间</dt><dd className="font-mono text-foreground">{number(draft.entryLower)}–{number(draft.entryUpper)}</dd></div>
             <div><dt>数量</dt><dd className="font-mono text-foreground">{number(draft.quantity, 8)}</dd></div>
             <div><dt>最大风险</dt><dd className="font-mono text-foreground">{number(draft.riskAmount, 2)} USDT · {number(draft.riskAmount / context.accountEquity * 100, 2)}%</dd></div>
             <div><dt>止损</dt><dd className="font-mono text-foreground">{number(draft.stopPrice)}</dd></div>
             <div><dt>止盈 TP1 / TP2</dt><dd className="font-mono text-foreground">{number(draft.takeProfit1Price)} / {number(draft.takeProfit2Price)}</dd></div>
-            <div><dt>预计成本</dt><dd className="font-mono text-foreground">{number(draft.estimatedCosts, 2)} USDT</dd></div>
+            <div><dt>预计手续费 / 滑点</dt><dd className="font-mono text-foreground">{number(draft.estimatedFees, 2)} / {number(draft.estimatedSlippage, 2)} USDT</dd></div>
             <div><dt>剩余有效时间</dt><dd className="font-mono text-foreground">{remainingSeconds} 秒</dd></div>
           </dl>
           <p className="mt-2 break-all text-[10px]">{draft.strategyVersion} · {draft.snapshotId} · {draft.backtestStatus}</p>
