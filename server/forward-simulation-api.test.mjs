@@ -140,6 +140,18 @@ test("crypto-ai-analysis.RELIABILITY.4 binds the forward-simulation API to loopb
   assert.equal(state.riskContext.accountEquity, 10_000);
 });
 
+test("crypto-ai-analysis.LONG_RUNNING.3 exposes readiness through a health endpoint", async () => {
+  const api = await startApi();
+  const healthy = await fetch(`${api.baseUrl}/api/forward-sim/health`);
+  assert.equal(healthy.status, 200);
+  assert.equal((await healthy.json()).status, "ok");
+
+  api.setRuntime({ connection: "connecting", ready: false, storageStatus: "ok" });
+  const degraded = await fetch(`${api.baseUrl}/api/forward-sim/health`);
+  assert.equal(degraded.status, 503);
+  assert.equal((await degraded.json()).status, "degraded");
+});
+
 test("crypto-ai-analysis.LONG_RUNNING.3 rejects new requests after shutdown begins", async () => {
   const api = await startApi();
   api.server.beginShutdown();

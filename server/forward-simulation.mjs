@@ -68,9 +68,10 @@ const api = createForwardSimulationApi({
     if (!SUPPORTED_SPOT_SYMBOLS.includes(symbol)) throw new Error("Unsupported spot symbol");
     return analysisPipeline.runManual(symbol);
   },
-  getAnalysisAttempt: (snapshotId) => SUPPORTED_SPOT_SYMBOLS
-    .map((symbol) => analysisPipeline.getLatest(symbol))
-    .find((attempt) => attempt?.snapshotId === snapshotId) ?? null,
+  // crypto-ai-analysis.FORWARD_SIMULATION.10-1
+  // Resolve only records restored or written by the server-side analysis pipeline.
+  getAnalysisAttempt: (snapshotId) => analysisPipeline.getHistory()
+    .find((attempt) => attempt.snapshotId === snapshotId) ?? null,
   getRuntimeStatus: () => ({
     ...runtime.getStatus(),
     dataPath,

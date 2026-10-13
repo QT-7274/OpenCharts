@@ -149,6 +149,16 @@ export function createForwardSimulationApi({
     for (const [id, item] of drafts) if (item.expiresAtMs <= now()) drafts.delete(id);
 
     try {
+      if (request.method === "GET" && url.pathname === `${PREFIX}/health`) {
+        const runtime = getRuntimeStatus();
+        const healthy = runtime?.ready === true && runtime?.storageStatus !== "error" && !ledger.getRuntimeError();
+        sendJson(response, healthy ? 200 : 503, {
+          status: healthy ? "ok" : "degraded",
+          runtime,
+          storageError: ledger.getRuntimeError(),
+        });
+        return;
+      }
       if (url.pathname === AGENT_PREFIX || url.pathname.startsWith(`${AGENT_PREFIX}/`)) {
         try {
           await handleAgentRequest(request, response, url);
