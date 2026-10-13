@@ -271,6 +271,7 @@ function buildDraft(
     riskExposure(state) + riskAmount > portfolioRiskLimit + 1e-8) {
     throw new Error("模拟账户资金或单笔/组合风险限制不满足");
   }
+  // crypto-ai-analysis.RISK_AND_PAPER_TRADING.8
   const estimatedFees = quantity * plan.entryUpper * (1 + costAssumptions.buySlippageRate) * costAssumptions.buyFeeRate +
     quantity * plan.stop * (1 - costAssumptions.sellSlippageRate) * costAssumptions.sellFeeRate;
   const estimatedSlippage = quantity * (plan.entryUpper * costAssumptions.buySlippageRate +
