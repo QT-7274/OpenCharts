@@ -10,6 +10,7 @@ if (!Number.isInteger(webPort) || webPort < 1 || webPort > 65_535) {
 const children = [
   spawn(node, ["node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", String(webPort)], { cwd: root, stdio: "inherit" }),
   spawn(node, ["--env-file-if-exists=.env", "server/index.mjs"], { cwd: root, stdio: "inherit" }),
+  // crypto-ai-analysis.FORWARD_SIMULATION.7
   spawn(node, ["--experimental-strip-types", "--env-file-if-exists=.env", "server/forward-simulation.mjs"], { cwd: root, stdio: "inherit" }),
 ];
 

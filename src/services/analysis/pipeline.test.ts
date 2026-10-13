@@ -49,7 +49,7 @@ function makePipeline(rest: MarketDataRestAdapter) {
 }
 
 describe("analysis trigger and as-of pipeline", () => {
-  it("crypto-ai-analysis.STRATEGY.2 crypto-ai-analysis.STRATEGY.3 crypto-ai-analysis.STRATEGY.4 crypto-ai-analysis.STRATEGY.12 attaches versioned indicators and trend evidence", async () => {
+  it("crypto-ai-analysis.STRATEGY.2 crypto-ai-analysis.STRATEGY.3 crypto-ai-analysis.STRATEGY.4 crypto-ai-analysis.STRATEGY.12 crypto-ai-analysis.ANALYSIS_OUTPUT.2 attaches versioned indicators and non-enter decision evidence", async () => {
     const restAdapter = adapter();
     const pipeline = makePipeline(restAdapter);
 
@@ -61,6 +61,7 @@ describe("analysis trigger and as-of pipeline", () => {
     expect(result.indicators?.["1h"]).toEqual(expect.objectContaining({ interval: "1h", close: 149 }));
     expect(result.trend).toEqual(expect.objectContaining({ direction: "bullish", eligibleForPullback: true }));
     expect(result.strategy).toEqual(expect.objectContaining({ state: "watch", avoidReason: null }));
+    expect(result.decision).toBe("暂不入场");
     expect(result.strategy?.score).toBeGreaterThanOrEqual(0);
     expect(result.currentPrice).toBe(149);
     expect(restAdapter.getSpotQuote).toHaveBeenCalledWith("BTCUSDT");
@@ -85,7 +86,7 @@ describe("analysis trigger and as-of pipeline", () => {
     expect(rest.getCandles).toHaveBeenCalledWith(expect.objectContaining({ interval: "1h", limit: 52 }));
   });
 
-  it("crypto-ai-analysis.ENTRY_PLAN.2 crypto-ai-analysis.ENTRY_PLAN.2-1 crypto-ai-analysis.ENTRY_PLAN.3-1 crypto-ai-analysis.ENTRY_PLAN.3 crypto-ai-analysis.ENTRY_PLAN.4 crypto-ai-analysis.ENTRY_PLAN.6 crypto-ai-analysis.ANALYSIS_SNAPSHOT.4 builds and restores a valid closed-candle plan", async () => {
+  it("crypto-ai-analysis.ENTRY_PLAN.2 crypto-ai-analysis.ENTRY_PLAN.2-1 crypto-ai-analysis.ENTRY_PLAN.3-1 crypto-ai-analysis.ENTRY_PLAN.3 crypto-ai-analysis.ENTRY_PLAN.4 crypto-ai-analysis.ENTRY_PLAN.6 crypto-ai-analysis.ANALYSIS_OUTPUT.3 crypto-ai-analysis.ANALYSIS_SNAPSHOT.4 builds and restores a valid closed-candle plan", async () => {
     const byInterval = Object.fromEntries(INTERVALS.map((interval) => [
       interval,
       risingSeries(interval, COUNTS[interval]),
@@ -157,6 +158,7 @@ describe("analysis trigger and as-of pipeline", () => {
     });
     expect(result.entryPlan?.estimatedStopRisk).toBeLessThanOrEqual(1_000);
     expect(result.strategy?.state).toBe("enter");
+    expect(result.decision).toBe("可进入模拟交易");
     const storedRecord = values.get("opencharts.analysis.attempts.v1")!;
     const storedRecords = JSON.parse(storedRecord) as Array<Record<string, unknown>>;
     const corruptedPlanRecord = {
@@ -321,7 +323,7 @@ describe("analysis trigger and as-of pipeline", () => {
     expect(result.decision).toBe("暂不入场");
   });
 
-  it("crypto-ai-analysis.CANDLE_QUALITY.3-2 persists bounded attempt metadata without raw candles", async () => {
+  it("crypto-ai-analysis.VALIDATION.3 crypto-ai-analysis.CANDLE_QUALITY.3-2 persists reproducible bounded attempt metadata without raw candles", async () => {
     const values = new Map<string, string>();
     const storage = {
       getItem: (key: string) => values.get(key) ?? null,
@@ -338,6 +340,8 @@ describe("analysis trigger and as-of pipeline", () => {
     expect(restored).toEqual([expect.objectContaining({
       trigger: "manual", analysisTimeMs: AT,
       candleCloseTimes: { "1d": AT, "4h": AT, "1h": AT },
+      strategyVersion: "trend-pullback-v1",
+      aiInputSummary: expect.objectContaining({ symbol: "BTCUSDT", analysisTimeMs: AT }),
     })]);
     expect(restored[0]).not.toHaveProperty("windows");
   });

@@ -185,7 +185,7 @@ const analysisAttemptRecordSchema = z.object({
   trigger: z.enum(["manual", "hourly-close"]),
   analysisTimeMs: nullableFinite,
   status: z.enum(["ready", "insufficient-data"]),
-  decision: z.literal("暂不入场"),
+  decision: z.enum(["暂不入场", "可进入模拟交易"]),
   reason: z.literal("数据不足或多周期数据不同步").nullable(),
   candleCloseTimes: z.object({ "1d": nullableFinite, "4h": nullableFinite, "1h": nullableFinite }),
   issues: z.array(issueSchema),

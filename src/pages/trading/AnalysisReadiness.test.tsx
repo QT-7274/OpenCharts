@@ -125,4 +125,82 @@ describe("analysis output", () => {
     ));
     expect(screen.getByText("数据不足 · 暂不入场")).toBeInTheDocument();
   });
+
+  it("crypto-ai-analysis.ANALYSIS_OUTPUT.3 crypto-ai-analysis.ANALYSIS_OUTPUT.4 crypto-ai-analysis.ANALYSIS_OUTPUT.4-1 renders algorithm values and evidence-only confidence", () => {
+    const readyAttempt = {
+      symbol: "BTCUSDT",
+      trigger: "manual",
+      analysisTimeMs: 1_760_000_000_000,
+      status: "ready",
+      decision: "可进入模拟交易",
+      reason: null,
+      candleCloseTimes: { "1d": 1, "4h": 1, "1h": 1 },
+      windows: { "1d": [], "4h": [], "1h": [] },
+      issues: [],
+      strategyVersion: "trend-pullback-v1",
+      snapshotId: "snapshot-ready",
+      aiInputSummary: null,
+      aiExplanation: null,
+      indicators: {
+        "1d": {},
+        "4h": {},
+        "1h": { rsi14: 55, macdHistogram: 1, volume: 120, volumeSma20: 100 },
+      },
+      trend: {
+        direction: "bullish",
+        eligibleForPullback: true,
+        daily: { interval: "1d", bullish: true, conditions: [] },
+        fourHour: { interval: "4h", bullish: true, conditions: [] },
+      },
+      strategy: {
+        state: "enter",
+        avoidReason: null,
+        score: 85,
+        scoreBreakdown: { trendQuality: 30, pullbackQuality: 20, priceConfirmation: 20, momentum: 15, volume: 10, volatilityAndFreshness: 5, total: 100 },
+        dataTimely: true,
+        volatilityQualified: true,
+        pullback: { enteredZone: true, heldInvalidation: true, latestCloseAtOrAboveEma20: true, valid: true, touchIndex: 1, barsSinceTouch: 0, zoneLower: 99, zoneUpper: 101, invalidationLine: 95, lowestLow: 96 },
+        confirmation: { ema20Reclaim: true, breakoutAbovePriorThreeHigh: false, priceTrigger: true, bothPriceTriggers: false, bullishCandle: true, rsiAtLeast50: true, rsiRising: true, passed: true, priorThreeHigh: 101 },
+        riskReward: 2,
+        entryPlanStatus: "active",
+      },
+      currentPrice: 100,
+      currentPriceObservedAtMs: 1_760_000_000_000,
+      currentPriceServerTimeMs: 1_760_000_000_000,
+      supportResistance: { support: null, resistance: null },
+      signal: null,
+      entryPlan: {
+        entryLower: 99,
+        entryUpper: 101,
+        stop: 90,
+        takeProfit1: 120,
+        takeProfit2: 130,
+        riskReward: 2,
+        suggestedQuantity: 5,
+        suggestedNotional: 500,
+        estimatedStopRisk: 50,
+        riskBudgetAmount: 100,
+        status: "active",
+      },
+      entryPlanFailure: null,
+    } as unknown as AnalysisAttempt;
+    getLatest.mockReturnValue(readyAttempt);
+
+    const view = render(<AnalysisReadiness symbol="BTCUSDT" />);
+    expect(screen.getByText("可进入模拟交易")).toBeInTheDocument();
+    expect(screen.getByText("证据置信度 高")).toBeInTheDocument();
+    expect(screen.getByText("入场 99–101")).toBeInTheDocument();
+    expect(screen.getByText("止损 90")).toBeInTheDocument();
+    expect(screen.getByText("止盈 120 / 130")).toBeInTheDocument();
+    expect(screen.getByText("R:R 1:2.00")).toBeInTheDocument();
+
+    view.unmount();
+    getLatest.mockReturnValue({
+      ...readyAttempt,
+      decision: "暂不入场",
+      strategy: { ...readyAttempt.strategy, state: "avoid", score: 69 },
+    });
+    render(<AnalysisReadiness symbol="BTCUSDT" />);
+    expect(screen.getByText("证据置信度 低")).toBeInTheDocument();
+  });
 });

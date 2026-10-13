@@ -14,7 +14,7 @@ function makeAttempt(symbol: SpotSymbol = "BTCUSDT"): AnalysisAttempt {
     trigger: "hourly-close",
     analysisTimeMs: fixedNow,
     status: "ready",
-    decision: "暂不入场",
+    decision: "可进入模拟交易",
     reason: null,
     candleCloseTimes: { "1d": fixedNow, "4h": fixedNow, "1h": fixedNow },
     windows: { "1d": [], "4h": [], "1h": [] },
@@ -133,14 +133,14 @@ describe("isolated crypto paper ledger", () => {
     expect(ledger.getState().orders[0]!.status).toBe("pending");
     expect(ledger.getState().pausedSymbols.BTCUSDT).toBeTruthy();
   });
-  it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.12 keeps paper equity isolated from terminal accounts", () => {
+  it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.2 crypto-ai-analysis.RISK_AND_PAPER_TRADING.12 keeps paper equity isolated from terminal accounts", () => {
     const ledger = createCryptoPaperLedger({ now: () => fixedNow });
     expect(ledger.getRiskContext()).toEqual({ accountEquity: 10_000, availableQuoteBalance: 10_000 });
     expect(ledger.getState().initialCapital).toBe(10_000);
     expect(ledger.getState().orders).toEqual([]);
   });
 
-  it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.6 crypto-ai-analysis.RISK_AND_PAPER_TRADING.6-1 requires a separate submit action", () => {
+  it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.4 crypto-ai-analysis.RISK_AND_PAPER_TRADING.6 crypto-ai-analysis.RISK_AND_PAPER_TRADING.6-1 crypto-ai-analysis.RISK_AND_PAPER_TRADING.12-1 requires a separate submit action", () => {
     const ledger = createCryptoPaperLedger({ now: () => fixedNow });
     const draft = ledger.createDraft(makeAttempt(), "experimental");
     expect(draft.quantity).toBeLessThanOrEqual(10);
@@ -156,7 +156,7 @@ describe("isolated crypto paper ledger", () => {
     expect(order.backtestStatus).toBe("experimental");
   });
 
-  it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.7-1 enforces the portfolio risk cap", () => {
+  it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.3 crypto-ai-analysis.RISK_AND_PAPER_TRADING.7-1 enforces the portfolio risk cap", () => {
     const ledger = createCryptoPaperLedger({ now: () => fixedNow });
     for (const symbol of ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const) {
       ledger.submitDraft(ledger.createDraft(makeAttempt(symbol), "experimental"));
@@ -325,5 +325,49 @@ describe("isolated crypto paper ledger", () => {
     const order = ledger.submitDraft(ledger.createDraft(makeAttempt(), "experimental"));
     expect(order.backtestStatus).toBe("experimental");
     expect(DEFAULT_BACKTEST_CONFIG.maxTradeRiskFraction).toBe(0.01);
+  });
+
+  it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.5-2 never borrows or creates a negative paper balance", async () => {
+    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const order = ledger.submitDraft(ledger.createDraft(makeAttempt(), "experimental"));
+    await ledger.processClosedCandle(candle(START + HOUR), { getCandles: vi.fn() } as never);
+    await ledger.processClosedCandle(candle(START + 2 * HOUR, { low: 85 }), { getCandles: vi.fn() } as never);
+
+    expect(ledger.getState().cash).toBeGreaterThanOrEqual(0);
+    expect(ledger.getRiskContext().accountEquity).toBeGreaterThanOrEqual(0);
+    expect(ledger.getRiskContext().availableQuoteBalance).toBeGreaterThanOrEqual(0);
+    expect(ledger.getState().orders.find((item) => item.id === order.id)?.reservedQuote).toBe(0);
+  });
+
+  it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.10 crypto-ai-analysis.RISK_AND_PAPER_TRADING.10-1 never creates a short order from a bearish analysis", () => {
+    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const bearish = makeAttempt();
+    bearish.strategy!.state = "avoid";
+    bearish.strategy!.avoidReason = "trend-not-qualified";
+    bearish.entryPlan = null;
+    bearish.supportResistance = {
+      support: { price: 90, lower: 89, upper: 91, touches: 2, lastTouchedAtMs: fixedNow },
+      resistance: null,
+    };
+
+    expect(() => ledger.createDraft(bearish, "experimental")).toThrow();
+    ledger.recordAnalysis(bearish);
+    expect(ledger.getState().orders).toHaveLength(0);
+    expect(ledger.getState().events.some((event) => event.kind === "signal")).toBe(false);
+  });
+
+  it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.12-2 stores an immutable snapshot and allows one active order per symbol", () => {
+    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const attempt = makeAttempt();
+    const draft = ledger.createDraft(attempt, "experimental");
+    attempt.entryPlan!.stop = 1;
+    attempt.strategy!.riskReward = 99;
+    const order = ledger.submitDraft(draft);
+
+    expect(order.snapshotId).toBe(draft.snapshotId);
+    expect(order.strategyVersion).toBe(draft.strategyVersion);
+    expect(order.backtestStatus).toBe(draft.backtestStatus);
+    expect(order.stopPrice).toBe(90);
+    expect(() => ledger.createDraft(makeAttempt(), "experimental")).toThrow(/已有未成交/);
   });
 });

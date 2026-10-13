@@ -14,6 +14,8 @@ import { runCryptoBacktest } from "../src/services/analysis/backtest.ts";
 import { createCryptoPaperLedger } from "../src/services/analysis/paper-trading.ts";
 import { createForwardRuntime } from "../src/services/analysis/forward-runtime.ts";
 
+// crypto-ai-analysis.FORWARD_SIMULATION.7
+// This module is the long-running forward-simulation process; the browser is only a client.
 const port = Number(process.env.OPENCHARTS_FORWARD_PORT ?? 4001);
 if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("OPENCHARTS_FORWARD_PORT is invalid");
 

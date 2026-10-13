@@ -108,6 +108,7 @@ function createState(): PaperLedgerState {
 function createEnterAttempt(): AnalysisAttempt {
   const attempt = createAttempt();
   attempt.status = "ready";
+  attempt.decision = "可进入模拟交易";
   attempt.currentPrice = 100;
   attempt.currentPriceObservedAtMs = attempt.analysisTimeMs;
   attempt.currentPriceServerTimeMs = attempt.analysisTimeMs;
@@ -205,7 +206,7 @@ describe("crypto paper panel", () => {
     expect(screen.getByText("BTCUSDT")).toBeInTheDocument();
   });
 
-  it("crypto-ai-analysis.FORWARD_SIMULATION.11-1 shows persisted backtest time and report cost assumptions", async () => {
+  it("crypto-ai-analysis.FORWARD_SIMULATION.5-1 crypto-ai-analysis.FORWARD_SIMULATION.11-1 shows modeled costs, persisted backtest time, and non-real-cost disclaimer", async () => {
     const state = createState();
     getState.mockReturnValue(state);
     getRiskContext.mockReturnValue({ accountEquity: 10_000, availableQuoteBalance: 9_000 });
@@ -248,9 +249,10 @@ describe("crypto paper panel", () => {
     await waitFor(() => expect(screen.getByText(/回测报告费率买\/卖 0.2% \/ 0.3%/)).toBeInTheDocument());
     expect(screen.getByText(/回测报告滑点买\/卖 0.1% \/ 0.15%/)).toBeInTheDocument();
     expect(screen.getByText(/回测报告更新时间/).parentElement?.textContent).toContain("2025-10-09 08:53:30 UTC");
+    expect(screen.getByText("成本按回测费率模型计算，不代表真实订单成交费用或实测滑点。")).toBeInTheDocument();
   });
 
-  it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.8 shows reference price and separate modeled costs before confirmation", async () => {
+  it("crypto-ai-analysis.SCOPE.1 crypto-ai-analysis.SCOPE.3 crypto-ai-analysis.RISK_AND_PAPER_TRADING.8 shows spot-paper scope and separate modeled costs before confirmation", async () => {
     const state = createState();
     state.orders = [];
     state.pausedSymbols = {};
@@ -299,6 +301,8 @@ describe("crypto paper panel", () => {
     fireEvent.click(prefill);
 
     expect(await screen.findByText("参考入场价")).toBeInTheDocument();
+    expect(screen.getByText("仅模拟 · 现货做多")).toBeInTheDocument();
+    expect(screen.getByText("策略尚未通过研究可用门槛")).toBeInTheDocument();
     expect(screen.getByText("预计手续费 / 滑点")).toBeInTheDocument();
     expect(screen.getByText("1.4 / 0.95 USDT")).toBeInTheDocument();
   });

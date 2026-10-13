@@ -198,6 +198,21 @@ function availableQuote(state: PaperLedgerState): number {
   return Math.max(0, state.cash - reserved);
 }
 
+// crypto-ai-analysis.RISK_AND_PAPER_TRADING.5-2
+function assertPaperAccountSolvent(state: PaperLedgerState): void {
+  const reserved = openOrders(state).filter((order) => order.status === "pending")
+    .reduce((sum, order) => sum + order.reservedQuote, 0);
+  const hasInvalidOrderBalance = state.orders.some((order) =>
+    !Number.isFinite(order.quantity) || order.quantity < 0 ||
+    !Number.isFinite(order.remainingQuantity) || order.remainingQuantity < 0 ||
+    !Number.isFinite(order.riskAmount) || order.riskAmount < 0 ||
+    !Number.isFinite(order.reservedQuote) || order.reservedQuote < 0);
+  if (!Number.isFinite(state.cash) || state.cash < 0 ||
+    !Number.isFinite(reserved) || reserved > state.cash + 1e-8 || hasInvalidOrderBalance) {
+    throw new Error("模拟账户不得借款或产生负余额");
+  }
+}
+
 function addEvent(state: PaperLedgerState, event: PaperTradingEventInput): void {
   if (state.events.some((item) => item.id === event.id)) return;
   state.events.push({
@@ -508,6 +523,7 @@ export function createCryptoPaperLedger({ storage, now = Date.now, afterCandle }
 
   function commit(next: PaperLedgerState): void {
     try {
+      assertPaperAccountSolvent(next);
       storage?.setItem(CRYPTO_PAPER_LEDGER_KEY, JSON.stringify(next));
       state = next;
       storageError = null;

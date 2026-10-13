@@ -169,6 +169,69 @@ describe("trend-pullback-v1 indicator and trend gate", () => {
     expect(evaluation.pullback.enteredZone).toBe(false);
   });
 
+  it("crypto-ai-analysis.STRATEGY.9-1 crypto-ai-analysis.STRATEGY.10 requires every hard gate in addition to the score", () => {
+    const dailyCandles = alignedTrendCandles("1d", 210, 100, 1);
+    const fourHourCandles = alignedTrendCandles("4h", 65, 100, 1);
+    const hourlyCandles = alignedTrendCandles("1h", 50, 100, 1);
+    const indicators = {
+      "1d": buildIndicatorSnapshot("1d", dailyCandles)!,
+      "4h": buildIndicatorSnapshot("4h", fourHourCandles)!,
+      "1h": buildIndicatorSnapshot("1h", hourlyCandles)!,
+    };
+    const trend = evaluateTrendGate(indicators);
+    const pullback = {
+      enteredZone: true,
+      heldInvalidation: true,
+      latestCloseAtOrAboveEma20: true,
+      valid: true,
+      touchIndex: 60,
+      barsSinceTouch: 0,
+      zoneLower: 100,
+      zoneUpper: 110,
+      invalidationLine: 95,
+      lowestLow: 98,
+    } as const;
+    const confirmation = {
+      ema20Reclaim: true,
+      breakoutAbovePriorThreeHigh: true,
+      priceTrigger: true,
+      bothPriceTriggers: true,
+      bullishCandle: true,
+      rsiAtLeast50: true,
+      rsiRising: true,
+      passed: true,
+      priorThreeHigh: 100,
+    } as const;
+    const input = {
+      indicators,
+      trend,
+      fourHourCandles,
+      oneHourCandles: hourlyCandles,
+      analysisTimeMs: BASE + 210 * MS["1d"] - 1,
+      pullbackAssessment: pullback,
+      hourlyConfirmation: confirmation,
+      entryPlanStatus: "active" as const,
+    };
+
+    const enter = evaluateStrategy({ ...input, riskReward: 2 });
+    expect(enter.score).toBeGreaterThanOrEqual(70);
+    expect(enter.state).toBe("enter");
+
+    expect(evaluateStrategy({ ...input, riskReward: 1.99 })).toMatchObject({
+      state: "avoid",
+      avoidReason: "risk-reward-insufficient",
+    });
+    expect(evaluateStrategy({ ...input, dataComplete: false, riskReward: 2 })).toMatchObject({
+      state: "avoid",
+      avoidReason: "data-incomplete",
+    });
+    expect(evaluateStrategy({
+      ...input,
+      pullbackAssessment: { ...pullback, heldInvalidation: false, valid: false },
+      riskReward: 2,
+    })).toMatchObject({ state: "avoid", avoidReason: "pullback-invalidated" });
+  });
+
   it("crypto-ai-analysis.STRATEGY.11 crypto-ai-analysis.STRATEGY.11-1 applies trend failure before setup", () => {
     const dailyCandles = alignedTrendCandles("1d", 210, 400, -1);
     const fourHourCandles = alignedTrendCandles("4h", 65, 100, 1);

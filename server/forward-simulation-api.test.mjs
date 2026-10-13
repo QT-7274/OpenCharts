@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
+import { readFile } from "node:fs/promises";
 import { BACKTEST_RECORD_KEY } from "./backtest-persistence.mjs";
 import { BacktestJobError } from "./backtest-jobs.mjs";
 import { resolveCurrentPersistedAnalysisAttempt } from "./analysis-snapshot-resolver.mjs";
@@ -139,6 +140,14 @@ test("crypto-ai-analysis.RELIABILITY.4 binds the forward-simulation API to loopb
   assert.equal(state.runtime.ready, true);
   assert.equal(state.costComparison.feeDifference, 0);
   assert.equal(state.riskContext.accountEquity, 10_000);
+});
+
+test("crypto-ai-analysis.FORWARD_SIMULATION.7 starts the forward simulator as an independent service process", async () => {
+  const launcher = await readFile(new URL("./dev-research.mjs", import.meta.url), "utf8");
+  const service = await readFile(new URL("./forward-simulation.mjs", import.meta.url), "utf8");
+  assert.match(launcher, /spawn\(node, \["--experimental-strip-types"/);
+  assert.match(launcher, /server\/forward-simulation\.mjs/);
+  assert.match(service, /listenForwardSimulationApi\(api, port\)/);
 });
 
 test("crypto-ai-analysis.LONG_RUNNING.3 exposes readiness through a health endpoint", async () => {

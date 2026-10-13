@@ -147,6 +147,8 @@ export function AnalysisReadiness({ symbol }: { symbol: string }) {
                   : "分析完成 · 暂不入场"
                 : "数据不足 · 暂不入场"}
             </span>
+            {/* crypto-ai-analysis.ANALYSIS_OUTPUT.2 crypto-ai-analysis.ANALYSIS_OUTPUT.4 */}
+            <span>{attempt.decision}</span>
             {attempt.strategy?.avoidReason && <span>{REASON_LABELS[attempt.strategy.avoidReason]}</span>}
             {attempt.strategy && (
               <span>证据置信度 {confidenceLabel(attempt.strategy.score)}</span>

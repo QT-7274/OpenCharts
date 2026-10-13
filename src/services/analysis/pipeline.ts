@@ -32,13 +32,14 @@ import {
 
 export type AnalysisTrigger = "manual" | "hourly-close";
 export type AnalysisStatus = "ready" | "insufficient-data";
+export type AnalysisDecision = "暂不入场" | "可进入模拟交易";
 
 export interface AnalysisAttempt {
   symbol: SpotSymbol;
   trigger: AnalysisTrigger;
   analysisTimeMs: number | null;
   status: AnalysisStatus;
-  decision: "暂不入场";
+  decision: AnalysisDecision;
   reason: "数据不足或多周期数据不同步" | null;
   candleCloseTimes: Record<SpotInterval, number | null>;
   windows: Record<SpotInterval, MarketCandle[]>;
@@ -91,6 +92,12 @@ function emptyAttempt(symbol: SpotSymbol, trigger: AnalysisTrigger, time: number
   };
 }
 
+function deriveDecision(attempt: Pick<AnalysisAttempt, "status" | "strategy">): AnalysisDecision {
+  return attempt.status === "ready" && attempt.strategy?.state === "enter"
+    ? "可进入模拟交易"
+    : "暂不入场";
+}
+
 function normalizeStoredRecord(value: unknown): AnalysisAttemptRecord | null {
   if (value == null || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
@@ -113,6 +120,7 @@ function normalizeStoredRecord(value: unknown): AnalysisAttemptRecord | null {
       validateAiExplanationNumbers(expectedSnapshot, storedExplanation.explanation)));
   return {
     ...parsed,
+    decision: deriveDecision(parsed),
     snapshotId: parsed.snapshotId || createSnapshotId(parsed),
     aiInputSummary: expectedSnapshot,
     aiExplanation: explanationIsConsistent ? storedExplanation : null,
@@ -265,6 +273,7 @@ export function createAnalysisPipeline({ restAdapter, getHealth, getRiskContext,
     const recorded: AnalysisAttempt = {
       ...attempt,
       snapshotId,
+      decision: deriveDecision(attempt),
       aiInputSummary,
       aiExplanation: attempt.aiExplanation ?? (canReuseExplanation ? previous.aiExplanation ?? null : null),
     };
@@ -515,6 +524,9 @@ export function createAnalysisPipeline({ restAdapter, getHealth, getRiskContext,
         });
         result.status = "ready";
         result.reason = null;
+        // crypto-ai-analysis.ANALYSIS_OUTPUT.2 crypto-ai-analysis.ANALYSIS_OUTPUT.3
+        // crypto-ai-analysis.ANALYSIS_OUTPUT.4 crypto-ai-analysis.ANALYSIS_OUTPUT.4-1
+        result.decision = deriveDecision(result);
       }
     }
     if (result.status === "insufficient-data" && previousPlan) {

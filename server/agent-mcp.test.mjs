@@ -14,7 +14,7 @@ function response(payload, status = 200) {
   });
 }
 
-test("crypto-ai-analysis.AGENT_MCP.1 crypto-ai-analysis.AGENT_MCP.2 exposes stable research tools over JSON-RPC", async () => {
+test("crypto-ai-analysis.SCOPE.1 crypto-ai-analysis.SCOPE.2 crypto-ai-analysis.AGENT_MCP.1 crypto-ai-analysis.AGENT_MCP.2 exposes only spot research tools over JSON-RPC", async () => {
   const server = createAgentMcpServer({
     apiClient: {
       getMarketSnapshot: async () => ({ symbol: "BTCUSDT" }),
@@ -43,6 +43,8 @@ test("crypto-ai-analysis.AGENT_MCP.1 crypto-ai-analysis.AGENT_MCP.2 exposes stab
     "opencharts_forward_simulation_state",
     "opencharts_create_paper_order_draft",
   ]);
+  assert.equal(listed.result.tools.some((tool) => /futures|leverage|real[_-]?order|screenshot/i.test(tool.name)), false);
+  assert.equal(listed.result.tools.some((tool) => /futures|leverage|real[_-]?order|screenshot/i.test(tool.description)), false);
 
   const draftTool = listed.result.tools.at(-1);
   assert.match(draftTool.description, /cannot confirm drafts|real exchange orders/i);
