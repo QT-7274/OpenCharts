@@ -61,7 +61,8 @@ export interface PaperOrder {
 export interface PaperTradingEvent {
   id: string;
   kind: "signal" | "order-created" | "order-cancelled" | "order-expired" | "fill" |
-    "take-profit-1" | "take-profit-2" | "stop" | "break-even" | "data-gap" | "data-restored" | "runtime-error";
+    "take-profit-1" | "take-profit-2" | "stop" | "break-even" | "data-gap" | "data-restored" |
+    "runtime-error" | "runtime-shutdown";
   symbol: SpotSymbol;
   timeMs: number;
   snapshotId: string | null;
@@ -197,7 +198,23 @@ function availableQuote(state: PaperLedgerState): number {
 
 function addEvent(state: PaperLedgerState, event: PaperTradingEventInput): void {
   if (state.events.some((item) => item.id === event.id)) return;
-  state.events.push({ snapshotId: null, strategyVersion: null, price: null, fee: null, slippage: null, ...event });
+  state.events.push({
+    snapshotId: null,
+    strategyVersion: null,
+    price: null,
+    fee: null,
+    slippage: null,
+    ...event,
+    reason: event.reason == null ? event.reason : sanitizeDiagnosticText(event.reason),
+  });
+}
+
+function sanitizeDiagnosticText(value: unknown): string {
+  return String(value)
+    .replace(/[\r\n]+/g, " ")
+    .replace(/(?:Bearer\s+|(?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,;]+/gi, "[redacted]")
+    .replace(/(?:file:\/\/|\/(?:Users|home|private|tmp|var)\/|[A-Za-z]:\\)[^\s]+/g, "[redacted-path]")
+    .slice(0, 500);
 }
 
 function getPlan(attempt: AnalysisAttempt, now: number): EntryPlan {
@@ -629,8 +646,15 @@ export function createCryptoPaperLedger({ storage, now = Date.now, afterCandle }
 
   function pauseSymbol(symbol: SpotSymbol, reason: string): void {
     const next = cloneState(state);
-    next.pausedSymbols[symbol] = reason;
-    addEvent(next, { id: `${symbol}:runtime:${now()}`, kind: "runtime-error", symbol, timeMs: now(), reason });
+    const safeReason = sanitizeDiagnosticText(reason);
+    next.pausedSymbols[symbol] = safeReason;
+    addEvent(next, { id: `${symbol}:runtime:${now()}`, kind: "runtime-error", symbol, timeMs: now(), reason: safeReason });
+    commit(next);
+  }
+
+  function recordRuntimeEvent(symbol: SpotSymbol, kind: "runtime-error" | "runtime-shutdown", reason: string): void {
+    const next = cloneState(state);
+    addEvent(next, { id: `${symbol}:${kind}:${now()}`, kind, symbol, timeMs: now(), reason });
     commit(next);
   }
 
@@ -639,7 +663,7 @@ export function createCryptoPaperLedger({ storage, now = Date.now, afterCandle }
     if (!validClosedHourly(candle) && !state.pausedSymbols[candle.symbol]) {
       const next = cloneState(state);
       const reason = "无效的闭合 1h OHLCV 行情，已暂停模拟成交";
-      next.pausedSymbols[candle.symbol] = reason;
+      next.pausedSymbols[candle.symbol] = sanitizeDiagnosticText(reason);
       addEvent(next, {
         id: `${candle.symbol}:invalid-candle:${Number.isFinite(candle.openTimeMs) ? candle.openTimeMs : now()}`,
         kind: "data-gap",
@@ -706,7 +730,7 @@ export function createCryptoPaperLedger({ storage, now = Date.now, afterCandle }
       } catch (error) {
         const next = cloneState(state);
         const reason = error instanceof Error ? error.message : "行情缺口补齐失败";
-        next.pausedSymbols[candle.symbol] = reason;
+        next.pausedSymbols[candle.symbol] = sanitizeDiagnosticText(reason);
         addEvent(next, {
           id: `${candle.symbol}:gap:${candle.openTimeMs}`,
           kind: "data-gap",
@@ -795,6 +819,7 @@ export function createCryptoPaperLedger({ storage, now = Date.now, afterCandle }
     cancelOrder,
     recordAnalysis,
     pauseSymbol,
+    recordRuntimeEvent,
     processClosedCandle,
     getRiskContext,
     getCostComparison,

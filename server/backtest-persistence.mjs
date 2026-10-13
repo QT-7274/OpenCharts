@@ -3,6 +3,15 @@ export const BACKTEST_STATUS_KEY = "opencharts.crypto.backtest-status.v1";
 
 const SUPPORTED_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT"];
 
+function sanitizeDiagnosticText(value) {
+  if (typeof value !== "string") return null;
+  return value
+    .replace(/[\r\n]+/g, " ")
+    .replace(/(?:Bearer\s+|(?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,;]+/gi, "[redacted]")
+    .replace(/(?:file:\/\/|\/(?:Users|home|private|tmp|var)\/|[A-Za-z]:\\)[^\s]+/g, "[redacted-path]")
+    .slice(0, 500);
+}
+
 export const DEFAULT_COST_ASSUMPTIONS = Object.freeze({
   buyFeeRate: 0.001,
   sellFeeRate: 0.001,
@@ -65,7 +74,7 @@ export function deriveBacktestStatus(report) {
   return { status: researchUsable ? "research-usable" : "experimental", strategyVersion: report.strategyVersion };
 }
 
-export function createBacktestRecord(report, costAssumptions, updatedAtMs = Date.now()) {
+export function createBacktestRecord(report, costAssumptions, updatedAtMs = Date.now(), metadata = {}) {
   if (!validCostAssumptions(costAssumptions)) throw new Error("Invalid backtest cost assumptions");
   const derived = deriveBacktestStatus(report);
   if (!validCostAssumptions(report?.costAssumptions) ||
@@ -77,26 +86,28 @@ export function createBacktestRecord(report, costAssumptions, updatedAtMs = Date
     costAssumptions,
     updatedAtMs,
     reportGeneratedAtMs: Number.isFinite(report?.generatedAtMs) ? report.generatedAtMs : null,
-    statusReason: typeof report?.statusReason === "string" ? report.statusReason : null,
+    taskId: typeof metadata.taskId === "string" ? metadata.taskId : null,
+    statusReason: sanitizeDiagnosticText(report?.statusReason),
     report,
   };
 }
 
-export function persistBacktestRecord(storage, report, costAssumptions, updatedAtMs = Date.now()) {
+export function persistBacktestRecord(storage, report, costAssumptions, updatedAtMs = Date.now(), metadata = {}) {
   if (!storage?.setItem) throw new Error("Backtest report storage is unavailable");
-  const record = createBacktestRecord(report, costAssumptions, updatedAtMs);
+  const record = createBacktestRecord(report, costAssumptions, updatedAtMs, metadata);
   storage.setItem(BACKTEST_RECORD_KEY, JSON.stringify(record));
   return record;
 }
 
-export function createInvalidBacktestRecord(strategyVersion, updatedAtMs = Date.now(), statusReason = null) {
+export function createInvalidBacktestRecord(strategyVersion, updatedAtMs = Date.now(), statusReason = null, metadata = {}) {
   return {
     status: "invalid",
     strategyVersion,
     costAssumptions: DEFAULT_COST_ASSUMPTIONS,
     updatedAtMs,
     reportGeneratedAtMs: null,
-    statusReason: typeof statusReason === "string" ? statusReason : null,
+    taskId: typeof metadata.taskId === "string" ? metadata.taskId : null,
+    statusReason: sanitizeDiagnosticText(statusReason),
     report: null,
   };
 }
@@ -106,9 +117,13 @@ export function readBacktestRecord(storage) {
     const record = JSON.parse(storage?.getItem(BACKTEST_RECORD_KEY) ?? "null");
     if (!record || typeof record.strategyVersion !== "string" || !Number.isFinite(record.updatedAtMs)) return null;
     if (record.status === "invalid" && !record.report) {
-      return createInvalidBacktestRecord(record.strategyVersion, record.updatedAtMs, record.statusReason);
+      return createInvalidBacktestRecord(record.strategyVersion, record.updatedAtMs, record.statusReason, {
+        taskId: record.taskId,
+      });
     }
-    const validated = createBacktestRecord(record.report, record.costAssumptions, record.updatedAtMs);
+    const validated = createBacktestRecord(record.report, record.costAssumptions, record.updatedAtMs, {
+      taskId: record.taskId,
+    });
     if (record.status === "invalid" || record.strategyVersion !== validated.strategyVersion) validated.status = "invalid";
     return validated;
   } catch {

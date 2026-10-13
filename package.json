@@ -7,6 +7,7 @@
     "dev": "npm run dev:research",
     "dev:ci": "vite --host 0.0.0.0 --port 5173",
     "dev:server": "node --env-file-if-exists=.env server/index.mjs",
+    "agent:mcp": "node server/agent-mcp.mjs",
     "dev:research": "node --env-file-if-exists=.env server/dev-research.mjs",
     "backtest:crypto": "node --experimental-strip-types --env-file-if-exists=.env server/run-backtest.mjs",
     "prototype:crypto-ai": "vite --host 127.0.0.1 --port 4174",
@@ -15,7 +16,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
-    "test": "vitest run && node --test server/file-storage.test.mjs server/backtest-persistence.test.mjs server/forward-simulation-api.test.mjs",
+    "test": "vitest run && node --test server/file-storage.test.mjs server/backtest-persistence.test.mjs server/backtest-jobs.test.mjs server/forward-simulation-api.test.mjs server/agent-api.test.mjs server/agent-mcp.test.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {

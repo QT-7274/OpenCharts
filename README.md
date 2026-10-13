@@ -20,6 +20,7 @@ Advanced charting · full drawing-tool suite · watchlist · depth-of-market · 
 - [How it works](#how-it-works)
 - [Project structure](#project-structure)
 - [Market data configuration](#market-data-configuration)
+- [Agent and MCP access](#agent-and-mcp-access)
 - [Refreshing the bundled market data](#refreshing-the-bundled-market-data)
 - [Bring your own data / backend](#bring-your-own-data--backend)
 - [Adding instruments](#adding-instruments)
@@ -186,6 +187,27 @@ To run without network access:
 VITE_MARKET_DATA_MODE=demo
 ```
 
+## Agent and MCP access
+
+The independent forward-simulation service exposes a browser-independent research API at
+`http://127.0.0.1:4001/api/agent/v1`. It returns public Spot market data, deterministic
+analysis snapshots, backtest state, forward-simulation state, and paper-order drafts.
+It has no real-order endpoint. Set `OPENCHARTS_AGENT_TOKEN` in `.env` to require a Bearer
+token for REST and MCP requests.
+
+Start the web and forward-simulation services with `npm run dev`, then start the local MCP
+stdio bridge in the process environment used by your Agent:
+
+```bash
+nvm use 22
+npm run agent:mcp
+```
+
+The MCP bridge uses `OPENCHARTS_AGENT_API_URL` and `OPENCHARTS_AGENT_TOKEN`, and exposes
+market snapshot, deterministic analysis, analysis history, backtest report, forward state,
+and paper-order-draft tools. Creating a draft does not confirm it and cannot submit a real
+exchange order.
+
 ## Project structure
 
 ```
@@ -258,6 +280,7 @@ Demo instruments are defined in `src/services/demo/instruments.ts`. To add one:
 | `npm run dev:research` | Start the complete local research stack |
 | `npm run dev:server` | Start only the AI explanation API |
 | `npm run backtest:crypto` | Load closed Binance history, run the full spot backtest, and persist its report |
+| `npm run agent:mcp` | Start the local stdio MCP bridge for research and paper-order drafts |
 | `npm run build` | Production build to `dist/` |
 | `npm run preview` | Preview the production build |
 | `npm run typecheck` | Type-check the project with `tsc` |

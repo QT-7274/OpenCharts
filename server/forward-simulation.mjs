@@ -2,10 +2,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createAtomicFileStorage } from "./file-storage.mjs";
 import { createForwardSimulationApi, listenForwardSimulationApi } from "./forward-simulation-api.mjs";
+import { createBacktestJobRunner } from "./backtest-jobs.mjs";
+import { createAgentDomain } from "./agent-domain.mjs";
 import { SUPPORTED_SPOT_SYMBOLS } from "../src/services/market-data/types.ts";
 import { createBinanceRestAdapter } from "../src/services/market-data/rest-adapter.ts";
 import { BinanceKlineStream } from "../src/services/market-data/ws-adapter.ts";
 import { createAnalysisPipeline } from "../src/services/analysis/pipeline.ts";
+import { loadCryptoBacktestHistory } from "../src/services/analysis/backtest-history.ts";
+import { runCryptoBacktest } from "../src/services/analysis/backtest.ts";
 import { createCryptoPaperLedger } from "../src/services/analysis/paper-trading.ts";
 import { createForwardRuntime } from "../src/services/analysis/forward-runtime.ts";
 
@@ -23,6 +27,11 @@ const stream = new BinanceKlineStream({
 });
 const storage = createAtomicFileStorage(dataPath);
 const backtestStorage = createAtomicFileStorage(backtestReportPath);
+const backtestJobs = createBacktestJobRunner({
+  storage: backtestStorage,
+  loadHistory: ({ onProgress }) => loadCryptoBacktestHistory({ adapter: restAdapter, onProgress }),
+  runBacktest: (assets, config, requestedPeriod) => runCryptoBacktest(assets, config, requestedPeriod),
+});
 const ledger = createCryptoPaperLedger({
   storage,
   afterCandle: async (candle) => {
@@ -39,11 +48,22 @@ analysisPipeline.subscribe((attempt) => ledger.recordAnalysis(attempt));
 
 const subscriptions = SUPPORTED_SPOT_SYMBOLS.map((symbol) => ({ symbol, interval: "1h" }));
 const runtime = createForwardRuntime({ ledger, stream, restAdapter });
+const agentDomain = createAgentDomain({
+  restAdapter,
+  analysisPipeline,
+  ledger,
+  backtestStorage,
+  backtestJobs,
+  getRuntimeStatus: () => runtime.getStatus(),
+});
 
 const api = createForwardSimulationApi({
   ledger,
   storage,
   backtestStorage,
+  backtestJobs,
+  agentDomain,
+  agentToken: process.env.OPENCHARTS_AGENT_TOKEN || null,
   runManualAnalysis: (symbol) => {
     if (!SUPPORTED_SPOT_SYMBOLS.includes(symbol)) throw new Error("Unsupported spot symbol");
     return analysisPipeline.runManual(symbol);
@@ -64,13 +84,19 @@ api.on("error", (error) => {
 const address = await listenForwardSimulationApi(api, port);
 stream.connect(subscriptions);
 console.info(`Forward simulation listening on http://127.0.0.1:${address.port}/api/forward-sim/state`);
+console.info(`Agent API available at http://127.0.0.1:${address.port}/api/agent/v1`);
 console.info(`Paper ledger stored at ${dataPath}`);
 console.info(`Backtest report stored at ${backtestReportPath}`);
 
-function shutdown() {
-  runtime.stop();
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  api.beginShutdown?.();
+  const runtimeStopped = runtime.stop();
   stream.disconnect();
-  api.close();
+  await Promise.all([runtimeStopped, backtestJobs.waitForIdle()]);
+  await new Promise((resolve) => api.close(resolve));
 }
 process.once("SIGINT", shutdown);
 process.once("SIGTERM", shutdown);

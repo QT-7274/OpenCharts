@@ -72,6 +72,7 @@ function eventLabel(kind: PaperTradingEvent["kind"]): string {
     "data-gap": "数据中断",
     "data-restored": "数据恢复",
     "runtime-error": "运行异常",
+    "runtime-shutdown": "服务关闭",
   }[kind];
 }
 

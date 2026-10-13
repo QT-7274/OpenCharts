@@ -140,4 +140,48 @@ describe("forward simulation runtime", () => {
     expect(processClosedCandle.mock.calls.at(-1)?.[0].openTimeMs).toBe(latestOpen + HOUR);
     runtime.stop();
   });
+
+  it("crypto-ai-analysis.LONG_RUNNING.3 waits for queued candle processing before stopping", async () => {
+    const stream = streamHarness();
+    const pausedSymbols: Record<string, string> = {};
+    const recordRuntimeEvent = vi.fn();
+    let releaseCandle: (() => void) | undefined;
+    let processingStarted: (() => void) | undefined;
+    const processStarted = new Promise<void>((resolve) => { processingStarted = resolve; });
+    const processClosedCandle = vi.fn(async (candle: MarketCandle) => {
+      delete pausedSymbols[candle.symbol];
+      if (processClosedCandle.mock.calls.length > SUPPORTED_SPOT_SYMBOLS.length) {
+        processingStarted!();
+        await new Promise<void>((resolve) => { releaseCandle = resolve; });
+      }
+    });
+    const ledger = {
+      processClosedCandle,
+      pauseSymbol: vi.fn((symbol: string, reason: string) => { pausedSymbols[symbol] = reason; }),
+      recordRuntimeEvent,
+      getState: () => ({ pausedSymbols }),
+      getRuntimeError: () => null,
+    } as never;
+    const latestOpen = Math.floor(NOW / HOUR) * HOUR - HOUR;
+    const restAdapter = {
+      getServerTime: vi.fn(async () => NOW),
+      getCandles: vi.fn(async ({ symbol }: { symbol: typeof SUPPORTED_SPOT_SYMBOLS[number] }) => [makeCandle(symbol, latestOpen)]),
+    } as never;
+    const runtime = createForwardRuntime({ ledger, stream, restAdapter, now: () => NOW });
+
+    stream.setHealth({ state: "live", lastMessageAtMs: NOW });
+    await vi.waitFor(() => expect(processClosedCandle).toHaveBeenCalledTimes(SUPPORTED_SPOT_SYMBOLS.length));
+    stream.emit(makeCandle("BTCUSDT", latestOpen + HOUR));
+    await processStarted;
+
+    let stopped = false;
+    const stopping = runtime.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    releaseCandle!();
+    await stopping;
+    expect(stopped).toBe(true);
+    expect(recordRuntimeEvent).toHaveBeenCalledTimes(SUPPORTED_SPOT_SYMBOLS.length);
+    expect(recordRuntimeEvent).toHaveBeenCalledWith("BTCUSDT", "runtime-shutdown", expect.any(String));
+  });
 });

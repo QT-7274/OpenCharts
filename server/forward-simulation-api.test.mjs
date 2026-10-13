@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { BACKTEST_RECORD_KEY } from "./backtest-persistence.mjs";
+import { BacktestJobError } from "./backtest-jobs.mjs";
 import { createForwardSimulationApi, listenForwardSimulationApi } from "./forward-simulation-api.mjs";
 
 const servers = [];
@@ -23,6 +24,45 @@ const BACKTEST_REPORT = {
     .map((symbol) => [symbol, { research: RESULT, outOfSample: RESULT }])),
   robustness: { walkForward: [], marketRegimes: [], parameterSensitivity: [] },
 };
+
+function createBacktestJobsStub() {
+  const completedTask = {
+    taskId: "task-1",
+    strategyVersion: "trend-pullback-v1",
+    requestedAtMs: 1,
+    updatedAtMs: 2,
+    phase: "completed",
+    progress: 100,
+    status: "completed",
+    errorSummary: null,
+    reportGeneratedAtMs: 3,
+    parameters: { initialCapital: 10_000 },
+  };
+  const runningTask = { ...completedTask, taskId: "task-running", phase: "running-backtest", progress: 90, status: "running" };
+  const created = [];
+  return {
+    created,
+    create(input) {
+      created.push(input);
+      return { ...completedTask, taskId: "task-created", requestedAtMs: 4, updatedAtMs: 4 };
+    },
+    get(taskId) {
+      if (taskId === completedTask.taskId) return completedTask;
+      if (taskId === runningTask.taskId) return runningTask;
+      if (taskId === "task-created") return { ...completedTask, taskId };
+      throw new BacktestJobError("Backtest task not found", 404);
+    },
+    getReport(taskId) {
+      if (taskId === runningTask.taskId) {
+        throw new BacktestJobError("Backtest report is not available for this task", 409);
+      }
+      if (taskId !== completedTask.taskId && taskId !== "task-created") {
+        throw new BacktestJobError("Backtest task not found", 404);
+      }
+      return { task: this.get(taskId), reportGeneratedAtMs: 3, report: BACKTEST_REPORT };
+    },
+  };
+}
 
 async function startApi(overrides = {}) {
   const calls = [];
@@ -62,6 +102,7 @@ async function startApi(overrides = {}) {
   const server = createForwardSimulationApi({
     ledger,
     storage,
+    backtestJobs: overrides.backtestJobs,
     getRuntimeStatus: () => runtime,
     getAnalysisAttempt: (snapshotId) => attempt?.snapshotId === snapshotId ? attempt : null,
     runManualAnalysis: async (symbol) => ({ ...attempt, symbol }),
@@ -71,6 +112,7 @@ async function startApi(overrides = {}) {
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
     address,
+    server,
     calls,
     setRuntime(value) { runtime = value; },
     setBacktestStatus(status, strategyVersion = "trend-pullback-v1") {
@@ -96,6 +138,49 @@ test("crypto-ai-analysis.RELIABILITY.4 binds the forward-simulation API to loopb
   assert.equal(state.runtime.ready, true);
   assert.equal(state.costComparison.feeDifference, 0);
   assert.equal(state.riskContext.accountEquity, 10_000);
+});
+
+test("crypto-ai-analysis.LONG_RUNNING.3 rejects new requests after shutdown begins", async () => {
+  const api = await startApi();
+  api.server.beginShutdown();
+  const response = await fetch(`${api.baseUrl}/api/forward-sim/state`);
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: "Forward simulation is shutting down" });
+});
+
+test("crypto-ai-analysis.BACKTEST_JOBS.1 crypto-ai-analysis.BACKTEST_JOBS.2 crypto-ai-analysis.BACKTEST_JOBS.5 exposes async task creation, status and report routes", async () => {
+  const backtestJobs = createBacktestJobsStub();
+  const api = await startApi({ backtestJobs });
+  const createResponse = await fetch(`${api.baseUrl}/api/forward-sim/backtest-jobs`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ initialCapital: 10_000 }),
+  });
+  assert.equal(createResponse.status, 202);
+  assert.deepEqual(backtestJobs.created, [{ initialCapital: 10_000 }]);
+  const created = await createResponse.json();
+  assert.equal(created.task.taskId, "task-created");
+
+  const statusResponse = await fetch(`${api.baseUrl}/api/forward-sim/backtest-jobs/task-1`);
+  assert.equal(statusResponse.status, 200);
+  assert.equal((await statusResponse.json()).task.status, "completed");
+
+  const reportResponse = await fetch(`${api.baseUrl}/api/forward-sim/backtest-jobs/task-1/report`);
+  assert.equal(reportResponse.status, 200);
+  const report = await reportResponse.json();
+  assert.equal(report.task.taskId, "task-1");
+  assert.equal(report.report.strategyVersion, "trend-pullback-v1");
+});
+
+test("crypto-ai-analysis.BACKTEST_JOBS.3 crypto-ai-analysis.BACKTEST_JOBS.6 maps task lookup and unavailable report errors", async () => {
+  const api = await startApi({ backtestJobs: createBacktestJobsStub() });
+  const missingTask = await fetch(`${api.baseUrl}/api/forward-sim/backtest-jobs/missing`);
+  assert.equal(missingTask.status, 404);
+  assert.deepEqual(await missingTask.json(), { error: "Backtest task not found" });
+
+  const runningReport = await fetch(`${api.baseUrl}/api/forward-sim/backtest-jobs/task-running/report`);
+  assert.equal(runningReport.status, 409);
+  assert.deepEqual(await runningReport.json(), { error: "Backtest report is not available for this task" });
 });
 
 test("crypto-ai-analysis.FORWARD_SIMULATION.8 requires a prepared draft before confirmation", async () => {

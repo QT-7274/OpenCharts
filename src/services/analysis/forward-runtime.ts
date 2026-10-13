@@ -20,7 +20,13 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
   let runtimeFailure: string | null = null;
   let lastSuccessfullyProcessedAtMs: number | null = null;
   const bufferedClosedCandles = new Map<string, Parameters<typeof ledger.processClosedCandle>[0]>();
+  const stopWaiters: Array<() => void> = [];
   const hourMs = intervalToMs("1h");
+
+  function resolveStopWaiters(): void {
+    if (!stopped || pending > 0 || recovering) return;
+    while (stopWaiters.length) stopWaiters.shift()!();
+  }
 
   function fail(symbol: typeof SUPPORTED_SPOT_SYMBOLS[number], error: unknown) {
     runtimeFailure = error instanceof Error ? error.message : "Forward simulation failed";
@@ -33,7 +39,10 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
       if (!ledger.getState().pausedSymbols[candle.symbol] && !ledger.getRuntimeError()) {
         lastSuccessfullyProcessedAtMs = Math.max(lastSuccessfullyProcessedAtMs ?? 0, candle.closeTimeMs);
       }
-    }).catch((error: unknown) => fail(candle.symbol, error)).finally(() => { pending -= 1; });
+    }).catch((error: unknown) => fail(candle.symbol, error)).finally(() => {
+      pending -= 1;
+      resolveStopWaiters();
+    });
   }
 
   function bufferCandle(candle: Parameters<typeof ledger.processClosedCandle>[0]): void {
@@ -87,6 +96,7 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
       if (generation === recoveryGeneration) {
         recovering = false;
         if (recovered) flushBufferedCandles();
+        resolveStopWaiters();
       }
     }
   }
@@ -113,6 +123,7 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
       const storageError = ledger.getRuntimeError();
       return {
         connection: health.state,
+        shuttingDown: stopped,
         ready: !stopped && health.state === "live" && fresh && recovered && !recovering && pending === 0 &&
           !storageError && Object.keys(ledger.getState().pausedSymbols).length === 0,
         recovering,
@@ -123,6 +134,16 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
         runtimeFailure,
       };
     },
-    stop() { stopped = true; unsubscribeClosed(); unsubscribeHealth(); },
+    stop(): Promise<void> {
+      if (stopped) return Promise.resolve();
+      stopped = true;
+      for (const symbol of SUPPORTED_SPOT_SYMBOLS) {
+        ledger.recordRuntimeEvent?.(symbol, "runtime-shutdown", "Forward simulation service is shutting down");
+      }
+      unsubscribeClosed();
+      unsubscribeHealth();
+      if (pending === 0 && !recovering) return Promise.resolve();
+      return new Promise((resolve) => stopWaiters.push(resolve));
+    },
   };
 }
