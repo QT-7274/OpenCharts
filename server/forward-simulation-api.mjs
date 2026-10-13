@@ -153,6 +153,12 @@ export function createForwardSimulationApi({
     return backtestStatusSummary(readBacktestRecord(backtestStorage));
   }
 
+  function runtimeAllowsOrders() {
+    const runtime = getRuntimeStatus();
+    return runtime?.ready === true && runtime.connection === "live" && runtime.storageStatus === "ok" &&
+      !ledger.getRuntimeError?.();
+  }
+
   const server = createServer(async (request, response) => {
     if (!acceptingRequests) {
       sendJson(response, 503, { error: "Forward simulation is shutting down" });
@@ -268,7 +274,7 @@ export function createForwardSimulationApi({
         return;
       }
       if (request.method === "POST" && url.pathname === `${PREFIX}/analyze`) {
-        if (!getRuntimeStatus().ready) {
+        if (!runtimeAllowsOrders()) {
           sendJson(response, 409, { error: "Forward simulation is disconnected, recovering or unavailable" });
           return;
         }
@@ -287,7 +293,7 @@ export function createForwardSimulationApi({
       }
       if (request.method === "POST" && url.pathname === `${PREFIX}/drafts`) {
         // crypto-ai-analysis.FORWARD_SIMULATION.10
-        if (!getRuntimeStatus().ready) {
+        if (!runtimeAllowsOrders()) {
           sendJson(response, 409, { error: "Forward simulation is disconnected, recovering or unavailable" });
           return;
         }
@@ -315,7 +321,7 @@ export function createForwardSimulationApi({
       }
       const confirmMatch = url.pathname.match(new RegExp(`^${PREFIX}/drafts/([^/]+)/confirm$`));
       if (request.method === "POST" && confirmMatch) {
-        if (!getRuntimeStatus().ready) {
+        if (!runtimeAllowsOrders()) {
           sendJson(response, 409, { error: "Forward simulation is disconnected, recovering or unavailable" });
           return;
         }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createCryptoPaperLedger, CRYPTO_PAPER_LEDGER_KEY, type PaperLedgerState } from "./paper-trading.ts";
+import { createCryptoPaperLedger, CRYPTO_PAPER_LEDGER_KEY, type PaperLedgerOptions, type PaperLedgerState } from "./paper-trading.ts";
 import type { AnalysisAttempt } from "./pipeline.ts";
 import { DEFAULT_BACKTEST_CONFIG } from "./backtest.ts";
 import { intervalToMs, type MarketCandle, type SpotSymbol } from "../market-data/types.ts";
@@ -96,17 +96,21 @@ function memoryStorage() {
   };
 }
 
+function testLedger(options: PaperLedgerOptions = {}) {
+  return createCryptoPaperLedger({ storage: memoryStorage(), now: () => fixedNow, ...options });
+}
+
 describe("isolated crypto paper ledger", () => {
   it("crypto-ai-analysis.FORWARD_SIMULATION.2 retains the full simulated event audit trail", () => {
     let now = fixedNow;
-    const ledger = createCryptoPaperLedger({ now: () => ++now });
+    const ledger = testLedger({ now: () => ++now });
     for (let index = 0; index < 1_005; index += 1) ledger.pauseSymbol("BTCUSDT", `event-${index}`);
     expect(ledger.getState().events).toHaveLength(1_005);
     expect(ledger.getState().events[0]?.reason).toBe("event-0");
   });
 
   it("crypto-ai-analysis.RELIABILITY.2 redacts secrets from runtime events", () => {
-    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const ledger = testLedger();
 
     ledger.recordRuntimeEvent("BTCUSDT", "runtime-error", "/Users/private/.env OPENAI_API_KEY=secret");
 
@@ -115,7 +119,7 @@ describe("isolated crypto paper ledger", () => {
   });
 
   it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.11-1 cancels pending orders on invalid analysis without requiring a snapshot", () => {
-    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const ledger = testLedger();
     ledger.submitDraft(ledger.createDraft(makeAttempt(), "experimental"));
     const invalid = makeAttempt();
     invalid.strategy!.state = "avoid";
@@ -126,7 +130,7 @@ describe("isolated crypto paper ledger", () => {
   });
 
   it("crypto-ai-analysis.FORWARD_SIMULATION.6 rejects invalid OHLCV without advancing a checkpoint", async () => {
-    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const ledger = testLedger();
     ledger.submitDraft(ledger.createDraft(makeAttempt(), "experimental"));
     await ledger.processClosedCandle(candle(START + HOUR, { close: NaN }), { getCandles: vi.fn() } as never);
     expect(ledger.getState().lastProcessedOpenTimeMs.BTCUSDT).toBe(START);
@@ -134,14 +138,14 @@ describe("isolated crypto paper ledger", () => {
     expect(ledger.getState().pausedSymbols.BTCUSDT).toBeTruthy();
   });
   it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.2 crypto-ai-analysis.RISK_AND_PAPER_TRADING.12 keeps paper equity isolated from terminal accounts", () => {
-    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const ledger = testLedger();
     expect(ledger.getRiskContext()).toEqual({ accountEquity: 10_000, availableQuoteBalance: 10_000 });
     expect(ledger.getState().initialCapital).toBe(10_000);
     expect(ledger.getState().orders).toEqual([]);
   });
 
   it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.4 crypto-ai-analysis.RISK_AND_PAPER_TRADING.6 crypto-ai-analysis.RISK_AND_PAPER_TRADING.6-1 crypto-ai-analysis.RISK_AND_PAPER_TRADING.12-1 requires a separate submit action", () => {
-    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const ledger = testLedger();
     const draft = ledger.createDraft(makeAttempt(), "experimental");
     expect(draft.quantity).toBeLessThanOrEqual(10);
     expect(draft.riskAmount).toBeLessThanOrEqual(100);
@@ -157,7 +161,7 @@ describe("isolated crypto paper ledger", () => {
   });
 
   it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.3 crypto-ai-analysis.RISK_AND_PAPER_TRADING.7-1 enforces the portfolio risk cap", () => {
-    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const ledger = testLedger();
     for (const symbol of ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const) {
       ledger.submitDraft(ledger.createDraft(makeAttempt(symbol), "experimental"));
     }
@@ -166,7 +170,7 @@ describe("isolated crypto paper ledger", () => {
 
   it("crypto-ai-analysis.FORWARD_SIMULATION.1 crypto-ai-analysis.FORWARD_SIMULATION.3 fills only on a later closed candle and applies stop priority", async () => {
     const storage = memoryStorage();
-    const ledger = createCryptoPaperLedger({ storage, now: () => fixedNow });
+    const ledger = testLedger({ storage, now: () => fixedNow });
     const order = ledger.submitDraft(ledger.createDraft(makeAttempt(), "experimental"));
     const restAdapter = { getCandles: vi.fn() } as never;
 
@@ -184,7 +188,7 @@ describe("isolated crypto paper ledger", () => {
   });
 
   it("crypto-ai-analysis.VALIDATION.6-1 crypto-ai-analysis.FORWARD_SIMULATION.3 fills an entry candle before applying its stop", async () => {
-    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const ledger = testLedger();
     const order = ledger.submitDraft(ledger.createDraft(makeAttempt(), "experimental"));
     await ledger.processClosedCandle(candle(START + HOUR, { low: 85, high: 140 }), { getCandles: vi.fn() } as never);
     const closed = ledger.getState().orders.find((item) => item.id === order.id)!;
@@ -196,7 +200,7 @@ describe("isolated crypto paper ledger", () => {
   });
 
   it("crypto-ai-analysis.FORWARD_SIMULATION.11 reports modeled cost deviation from the backtest rates", async () => {
-    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const ledger = testLedger();
     const order = ledger.submitDraft(ledger.createDraft(makeAttempt(), "experimental"));
     await ledger.processClosedCandle(candle(START + HOUR), { getCandles: vi.fn() } as never);
     await ledger.processClosedCandle(candle(START + 2 * HOUR, { low: 85 }), { getCandles: vi.fn() } as never);
@@ -209,7 +213,7 @@ describe("isolated crypto paper ledger", () => {
   });
 
   it("crypto-ai-analysis.FORWARD_SIMULATION.5 binds custom backtest cost assumptions to the order", async () => {
-    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const ledger = testLedger();
     const costs = { buyFeeRate: 0.002, sellFeeRate: 0.003, buySlippageRate: 0.001, sellSlippageRate: 0.0015 };
     const order = ledger.submitDraft(ledger.createDraft(makeAttempt(), "experimental", costs));
     await ledger.processClosedCandle(candle(START + HOUR), { getCandles: vi.fn() } as never);
@@ -224,9 +228,9 @@ describe("isolated crypto paper ledger", () => {
 
   it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.12-3 crypto-ai-analysis.FORWARD_SIMULATION.4 restores orders and checkpoints after reload", () => {
     const storage = memoryStorage();
-    const original = createCryptoPaperLedger({ storage, now: () => fixedNow });
+    const original = testLedger({ storage, now: () => fixedNow });
     original.submitDraft(original.createDraft(makeAttempt(), "experimental"));
-    const restored = createCryptoPaperLedger({ storage, now: () => fixedNow });
+    const restored = testLedger({ storage, now: () => fixedNow });
     const state: PaperLedgerState = restored.getState();
     expect(state.initialCapital).toBe(10_000);
     expect(state.orders[0]?.status).toBe("pending");
@@ -234,7 +238,7 @@ describe("isolated crypto paper ledger", () => {
   });
 
   it("crypto-ai-analysis.FORWARD_SIMULATION.4 crypto-ai-analysis.FORWARD_SIMULATION.6 pauses on an unfillable gap", async () => {
-    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const ledger = testLedger();
     const order = ledger.submitDraft(ledger.createDraft(makeAttempt(), "experimental"));
     const restAdapter = { getCandles: vi.fn().mockResolvedValue([]) } as never;
     await ledger.processClosedCandle(candle(START + HOUR), restAdapter);
@@ -246,7 +250,7 @@ describe("isolated crypto paper ledger", () => {
 
   it("crypto-ai-analysis.RELIABILITY.1 fills gaps in chronological order and ignores duplicate candles", async () => {
     const processed: number[] = [];
-    const ledger = createCryptoPaperLedger({ now: () => fixedNow, afterCandle: async (row) => { processed.push(row.openTimeMs); } });
+    const ledger = testLedger({ afterCandle: async (row) => { processed.push(row.openTimeMs); } });
     ledger.submitDraft(ledger.createDraft(makeAttempt(), "experimental"));
     await ledger.processClosedCandle(candle(START + HOUR), { getCandles: vi.fn() } as never);
     const restAdapter = { getCandles: vi.fn().mockResolvedValue([candle(START + 3 * HOUR), candle(START + 2 * HOUR)]) } as never;
@@ -261,7 +265,7 @@ describe("isolated crypto paper ledger", () => {
 
   it("crypto-ai-analysis.FORWARD_SIMULATION.4-1 crypto-ai-analysis.RELIABILITY.1-1 retries analysis without replaying a fill", async () => {
     const afterCandle = vi.fn().mockRejectedValueOnce(new Error("temporary analysis failure"));
-    const ledger = createCryptoPaperLedger({ now: () => fixedNow, afterCandle });
+    const ledger = testLedger({ afterCandle });
     const order = ledger.submitDraft(ledger.createDraft(makeAttempt(), "experimental"));
     const row = candle(START + HOUR);
     const restAdapter = { getCandles: vi.fn() } as never;
@@ -281,7 +285,7 @@ describe("isolated crypto paper ledger", () => {
   });
 
   it("crypto-ai-analysis.RELIABILITY.1-2 restores outages in REST-sized batches", async () => {
-    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const ledger = testLedger();
     ledger.submitDraft(ledger.createDraft(makeAttempt(), "experimental"));
     const first = candle(START + HOUR);
     await ledger.processClosedCandle(first, { getCandles: vi.fn() } as never);
@@ -299,7 +303,7 @@ describe("isolated crypto paper ledger", () => {
 
   it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.12-3 keeps state unchanged and blocks orders after a storage failure", () => {
     const storage = memoryStorage();
-    const ledger = createCryptoPaperLedger({ storage, now: () => fixedNow });
+    const ledger = testLedger({ storage, now: () => fixedNow });
     const draft = ledger.createDraft(makeAttempt(), "experimental");
     storage.setItem.mockImplementation(() => { throw new Error("Disk unavailable"); });
     expect(() => ledger.submitDraft(draft)).toThrow(/保存失败/);
@@ -308,8 +312,36 @@ describe("isolated crypto paper ledger", () => {
     expect(() => ledger.createDraft(makeAttempt(), "experimental")).toThrow(/存储不可用/);
   });
 
-  it("crypto-ai-analysis.FORWARD_SIMULATION.4 clears a disconnect pause at the existing checkpoint without replaying a fill", async () => {
+  it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.12-3 treats missing storage as unavailable", () => {
     const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+
+    expect(ledger.getRuntimeError()).toMatch(/存储不可用/);
+    expect(() => ledger.createDraft(makeAttempt(), "experimental")).toThrow(/存储不可用/);
+  });
+
+  it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.12-3 rejects malformed persisted orders", () => {
+    const storage = memoryStorage();
+    storage.setItem(CRYPTO_PAPER_LEDGER_KEY, JSON.stringify({
+      schemaVersion: 1,
+      initialCapital: 10_000,
+      cash: 10_000,
+      orders: [{ id: "corrupted-order" }],
+      events: [],
+      lastProcessedOpenTimeMs: {},
+      lastAnalyzedOpenTimeMs: {},
+      lastPrices: {},
+      pausedSymbols: {},
+    }));
+
+    const ledger = createCryptoPaperLedger({ storage, now: () => fixedNow });
+
+    expect(ledger.getRuntimeError()).toMatch(/格式无效/);
+    expect(ledger.getState().orders).toHaveLength(0);
+    expect(() => ledger.createDraft(makeAttempt(), "experimental")).toThrow(/存储不可用/);
+  });
+
+  it("crypto-ai-analysis.FORWARD_SIMULATION.4 clears a disconnect pause at the existing checkpoint without replaying a fill", async () => {
+    const ledger = testLedger();
     ledger.submitDraft(ledger.createDraft(makeAttempt(), "experimental"));
     const restAdapter = { getCandles: vi.fn() } as never;
     await ledger.processClosedCandle(candle(START + HOUR), restAdapter);
@@ -320,15 +352,26 @@ describe("isolated crypto paper ledger", () => {
     expect(ledger.getState().events.some((event) => event.kind === "data-restored")).toBe(true);
   });
 
+  it("crypto-ai-analysis.RELIABILITY.1 clears a recoverable runtime pause at a verified checkpoint", async () => {
+    const ledger = testLedger();
+    ledger.submitDraft(ledger.createDraft(makeAttempt(), "experimental"));
+    const restAdapter = { getCandles: vi.fn() } as never;
+    await ledger.processClosedCandle(candle(START + HOUR), restAdapter);
+    ledger.pauseSymbol("BTCUSDT", "temporary REST failure");
+    await ledger.processClosedCandle(candle(START + HOUR), restAdapter);
+    expect(ledger.getState().pausedSymbols.BTCUSDT).toBeUndefined();
+    expect(ledger.getState().events.filter((event) => event.kind === "fill")).toHaveLength(1);
+  });
+
   it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.9 retains the non-dismissible experimental status on the order", () => {
-    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const ledger = testLedger();
     const order = ledger.submitDraft(ledger.createDraft(makeAttempt(), "experimental"));
     expect(order.backtestStatus).toBe("experimental");
     expect(DEFAULT_BACKTEST_CONFIG.maxTradeRiskFraction).toBe(0.01);
   });
 
   it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.5-2 never borrows or creates a negative paper balance", async () => {
-    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const ledger = testLedger();
     const order = ledger.submitDraft(ledger.createDraft(makeAttempt(), "experimental"));
     await ledger.processClosedCandle(candle(START + HOUR), { getCandles: vi.fn() } as never);
     await ledger.processClosedCandle(candle(START + 2 * HOUR, { low: 85 }), { getCandles: vi.fn() } as never);
@@ -340,7 +383,7 @@ describe("isolated crypto paper ledger", () => {
   });
 
   it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.10 crypto-ai-analysis.RISK_AND_PAPER_TRADING.10-1 never creates a short order from a bearish analysis", () => {
-    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const ledger = testLedger();
     const bearish = makeAttempt();
     bearish.strategy!.state = "avoid";
     bearish.strategy!.avoidReason = "trend-not-qualified";
@@ -357,7 +400,7 @@ describe("isolated crypto paper ledger", () => {
   });
 
   it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.12-2 stores an immutable snapshot and allows one active order per symbol", () => {
-    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+    const ledger = testLedger();
     const attempt = makeAttempt();
     const draft = ledger.createDraft(attempt, "experimental");
     attempt.entryPlan!.stop = 1;

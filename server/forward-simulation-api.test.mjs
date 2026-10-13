@@ -9,23 +9,68 @@ import { createForwardSimulationApi, listenForwardSimulationApi } from "./forwar
 const servers = [];
 const COST_ASSUMPTIONS = { buyFeeRate: 0.001, sellFeeRate: 0.001, buySlippageRate: 0.0005, sellSlippageRate: 0.0005 };
 const PERIOD = { startMs: 1, endMs: 2 };
-const RESULT = {
-  period: PERIOD,
-  metrics: { tradeCount: 10, maxDrawdownPct: 5, netReturnPct: 2, profitFactor: 1.2 },
-  trades: [],
-  buyAndHold: {},
-};
-const BACKTEST_REPORT = {
-  strategyVersion: "trend-pullback-v1",
-  generatedAtMs: 1,
-  costAssumptions: COST_ASSUMPTIONS,
-  requestedPeriod: PERIOD,
-  validityChecks: { closedCandlesOnly: true, nextBarExecution: true, deterministicEngine: true },
-  portfolio: { research: RESULT, outOfSample: RESULT },
-  symbols: Object.fromEntries(["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT"]
-    .map((symbol) => [symbol, { research: RESULT, outOfSample: RESULT }])),
-  robustness: { walkForward: [], marketRegimes: [], parameterSensitivity: [] },
-};
+function reportMetrics() {
+  return {
+    signalCount: 10, tradeCount: 10, skippedSignalCount: 0, skipReasons: {},
+    strategyStateCounts: { watch: 0, setup: 0, enter: 10, avoid: 0 },
+    winRatePct: 50, netReturnPct: 2, annualizedReturnPct: 2, profitFactor: 1.2,
+    maxDrawdownPct: 5, averageNetPnl: 20, averageHoldingHours: 4,
+    averageActualRiskReward: 1.1, totalCosts: 10, maxConsecutiveLosses: 2,
+    sharpeRatio: 0.8, endingEquity: 10_200,
+  };
+}
+
+function reportResult(period) {
+  return {
+    period,
+    metrics: reportMetrics(),
+    trades: [],
+    buyAndHold: {
+      netReturnPct: 3, maxDrawdownPct: 6, sharpeRatio: 0.7,
+      netReturnDifferencePct: -1, maxDrawdownDifferencePct: -1, sharpeDifference: 0.1,
+    },
+  };
+}
+
+function completeBacktestReport(overrides = {}) {
+  const reportPeriod = { startMs: 1, endMs: 100 };
+  const folds = [
+    { id: 1, trainingPeriod: { startMs: 1, endMs: 30 }, testPeriod: { startMs: 31, endMs: 50 } },
+    { id: 2, trainingPeriod: { startMs: 1, endMs: 50 }, testPeriod: { startMs: 51, endMs: 70 } },
+    { id: 3, trainingPeriod: { startMs: 1, endMs: 70 }, testPeriod: { startMs: 71, endMs: 100 } },
+  ].map((fold) => ({ ...fold, sampleSufficient: false, metrics: reportMetrics() }));
+  const result = reportResult({ startMs: 1, endMs: 70 });
+  const outOfSample = reportResult({ startMs: 71, endMs: 100 });
+  return {
+    strategyVersion: "trend-pullback-v1",
+    status: "experimental",
+    statusReason: "样本不足",
+    generatedAtMs: 1,
+    costAssumptions: COST_ASSUMPTIONS,
+    requestedPeriod: reportPeriod,
+    validityChecks: { closedCandlesOnly: true, nextBarExecution: true, deterministicEngine: true },
+    portfolio: { research: result, outOfSample },
+    symbols: Object.fromEntries(["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT"]
+      .map((symbol) => [symbol, { research: result, outOfSample }])),
+    robustness: {
+      walkForward: folds,
+      marketRegimes: ["bull", "sideways", "bear", "unknown"].map((regime) => ({
+        regime, tradeCount: 0, netPnl: 0, winRatePct: null, profitFactor: null,
+      })),
+      parameterSensitivity: [65, 70, 75].map((minimumScore) => ({
+        minimumScore,
+        strategyVersion: minimumScore === 70 ? "trend-pullback-v1" : `trend-pullback-v1-score-${minimumScore}`,
+        evaluationScope: "research-only",
+        period: { startMs: 1, endMs: 70 },
+        metrics: reportMetrics(),
+      })),
+    },
+    ...overrides,
+  };
+}
+
+const RESULT = reportResult(PERIOD);
+const BACKTEST_REPORT = completeBacktestReport();
 
 function createBacktestJobsStub() {
   const completedTask = {
@@ -313,6 +358,18 @@ test("crypto-ai-analysis.FORWARD_SIMULATION.10 rejects order drafts unless runti
   assert.equal(api.calls.length, 0);
 });
 
+test("crypto-ai-analysis.FORWARD_SIMULATION.10 rejects order operations when storage is degraded", async () => {
+  const api = await startApi();
+  api.setRuntime({ connection: "live", ready: true, storageStatus: "error" });
+  const response = await fetch(`${api.baseUrl}/api/forward-sim/drafts`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ snapshotId: "snapshot-1" }),
+  });
+  assert.equal(response.status, 409);
+  assert.equal(api.calls.length, 0);
+});
+
 test("crypto-ai-analysis.FORWARD_SIMULATION.10 rechecks runtime readiness at confirmation", async () => {
   const api = await startApi();
   const draftResponse = await fetch(`${api.baseUrl}/api/forward-sim/drafts`, {
@@ -371,29 +428,16 @@ test("crypto-ai-analysis.FORWARD_SIMULATION.10-1 rejects a stale snapshot at con
 
 test("crypto-ai-analysis.FORWARD_SIMULATION.10-1 derives status from the report instead of the client claim", async () => {
   const api = await startApi();
-  const symbols = Object.fromEntries(["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT"]
-    .map((symbol) => [symbol, { outOfSample: { metrics: { tradeCount: 10, maxDrawdownPct: 5, netReturnPct: 2, profitFactor: 1.2 } } }]));
+  const report = completeBacktestReport({
+    generatedAtMs: Date.now(),
+    costAssumptions: { buyFeeRate: 0.002, sellFeeRate: 0.003, buySlippageRate: 0.001, sellSlippageRate: 0.0015 },
+  });
   const response = await fetch(`${api.baseUrl}/api/forward-sim/backtest-status`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       status: "research-usable",
-      report: {
-        strategyVersion: "trend-pullback-v1",
-        costAssumptions: { buyFeeRate: 0.002, sellFeeRate: 0.003, buySlippageRate: 0.001, sellSlippageRate: 0.0015 },
-        generatedAtMs: Date.now(),
-        requestedPeriod: { startMs: 1, endMs: 2 },
-        validityChecks: { closedCandlesOnly: true, nextBarExecution: true, deterministicEngine: true },
-        portfolio: {
-          research: { period: { startMs: 1, endMs: 2 }, metrics: { tradeCount: 0, maxDrawdownPct: 0, netReturnPct: 0, profitFactor: null }, trades: [], buyAndHold: {} },
-          outOfSample: { period: { startMs: 1, endMs: 2 }, metrics: { tradeCount: 10, maxDrawdownPct: 5, netReturnPct: 2, profitFactor: 1.2 }, trades: [], buyAndHold: {} },
-        },
-        symbols: Object.fromEntries(Object.entries(symbols).map(([symbol, value]) => [symbol, {
-          research: { period: { startMs: 1, endMs: 2 }, metrics: { tradeCount: 0, maxDrawdownPct: 0, netReturnPct: 0, profitFactor: null }, trades: [], buyAndHold: {} },
-          outOfSample: { ...value.outOfSample, period: { startMs: 1, endMs: 2 }, trades: [], buyAndHold: {} },
-        }])),
-        robustness: { walkForward: [], marketRegimes: [], parameterSensitivity: [] },
-      },
+      report,
       costAssumptions: { buyFeeRate: 0.002, sellFeeRate: 0.003, buySlippageRate: 0.001, sellSlippageRate: 0.0015 },
     }),
   });
@@ -405,18 +449,10 @@ test("crypto-ai-analysis.FORWARD_SIMULATION.10-1 derives status from the report 
 
 test("crypto-ai-analysis.VALIDATION.18 persists and serves the complete backtest report", async () => {
   const api = await startApi();
-  const period = { startMs: 1, endMs: 2 };
-  const result = { period, metrics: { tradeCount: 10, maxDrawdownPct: 5, netReturnPct: 2, profitFactor: 1.2 }, trades: [], buyAndHold: {} };
-  const report = {
-    strategyVersion: "trend-pullback-v1", generatedAtMs: 123,
+  const report = completeBacktestReport({
+    generatedAtMs: 123,
     costAssumptions: { buyFeeRate: 0.002, sellFeeRate: 0.003, buySlippageRate: 0.001, sellSlippageRate: 0.0015 },
-    requestedPeriod: period,
-    validityChecks: { closedCandlesOnly: true, nextBarExecution: true, deterministicEngine: true },
-    portfolio: { research: result, outOfSample: result },
-    symbols: Object.fromEntries(["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT"]
-      .map((symbol) => [symbol, { research: result, outOfSample: result }])),
-    robustness: { walkForward: [], marketRegimes: [], parameterSensitivity: [] },
-  };
+  });
   const response = await fetch(`${api.baseUrl}/api/forward-sim/backtest-status`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ report, costAssumptions: report.costAssumptions }),

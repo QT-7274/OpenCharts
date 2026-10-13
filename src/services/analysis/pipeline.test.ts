@@ -523,6 +523,20 @@ describe("analysis trigger and as-of pipeline", () => {
     expect(attempt.persistenceError).toBe("analysis-snapshot");
   });
 
+  it("crypto-ai-analysis.ANALYSIS_SNAPSHOT.5 reports unavailable persistence when storage is missing", async () => {
+    const pipeline = createAnalysisPipeline({
+      restAdapter: adapter(),
+      getRiskContext: () => ({ accountEquity: 100_000, availableQuoteBalance: 100_000 }),
+      getHealth: () => ({ state: "live", serverTimeMs: AT, lastMessageAtMs: AT,
+        lastClosedCandleAtMs: AT, missingRanges: [] }),
+    });
+
+    const attempt = await pipeline.runManual("BTCUSDT");
+
+    expect(attempt.persistenceError).toBe("analysis-snapshot");
+    expect(pipeline.getRecords()).toHaveLength(0);
+  });
+
   it("crypto-ai-analysis.ANALYSIS_SNAPSHOT.5 clears persistence errors after a successful save", async () => {
     const values = new Map<string, string>();
     const setItem = vi.fn((key: string, value: string) => { values.set(key, value); })

@@ -285,7 +285,8 @@ export function createAnalysisPipeline({ restAdapter, getHealth, getRiskContext,
     if (existingRecordIndex >= 0) records[existingRecordIndex] = summary;
     else records.push(summary);
     try {
-      storage?.setItem(HISTORY_KEY, JSON.stringify(records));
+      if (!storage?.setItem) throw new Error("分析快照存储不可用");
+      storage.setItem(HISTORY_KEY, JSON.stringify(records));
       if (snapshotId) persistedRecords.set(snapshotId, summary);
     } catch {
       recorded.persistenceError = "analysis-snapshot";
@@ -324,7 +325,8 @@ export function createAnalysisPipeline({ restAdapter, getHealth, getRiskContext,
     delete persistableUpdate.persistenceError;
     updated = persistableUpdate;
     try {
-      storage?.setItem(HISTORY_KEY, JSON.stringify(records));
+      if (!storage?.setItem) throw new Error("AI 解释存储不可用");
+      storage.setItem(HISTORY_KEY, JSON.stringify(records));
       if (snapshotId) persistedRecords.set(snapshotId, updatedRecord);
     } catch {
       updated = { ...updated, persistenceError: "ai-explanation" };

@@ -35,6 +35,7 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
   let processingQueuedCandles = false;
   let drainScheduled = false;
   const stopWaiters: Array<() => void> = [];
+  let recoveryRetryTimer: ReturnType<typeof setTimeout> | null = null;
   const hourMs = intervalToMs("1h");
 
   function resolveStopWaiters(): void {
@@ -103,6 +104,19 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
     for (const candle of candles) processCandle(candle);
   }
 
+  function clearRecoveryRetry(): void {
+    if (recoveryRetryTimer) clearTimeout(recoveryRetryTimer);
+    recoveryRetryTimer = null;
+  }
+
+  function scheduleRecoveryRetry(): void {
+    if (recoveryRetryTimer || stopped || recovering || recovered || stream.health.state !== "live") return;
+    recoveryRetryTimer = setTimeout(() => {
+      recoveryRetryTimer = null;
+      if (!stopped && !recovering && !recovered && stream.health.state === "live") void recover();
+    }, 1_000);
+  }
+
   const unsubscribeClosed = stream.subscribeClosed((candle) => {
     if (stopped || candle.interval !== "1h") return;
     // Stream recovery emits closed candles before its health state becomes live. Hold them
@@ -119,6 +133,8 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
     const generation = ++recoveryGeneration;
     recovering = true;
     recovered = false;
+    clearRecoveryRetry();
+    const failedSymbols = new Set<typeof SUPPORTED_SPOT_SYMBOLS[number]>();
     try {
       const serverTimeMs = await restAdapter.getServerTime();
       if (!Number.isFinite(serverTimeMs)) throw new Error("Invalid market server time");
@@ -128,22 +144,35 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
         try {
           const candles = await restAdapter.getCandles({ symbol, interval: "1h", startTimeMs: latestOpenTimeMs,
             endTimeMs: latestOpenTimeMs + hourMs - 1, limit: 1 });
-          const latest = candles.find((candle) => candle.isClosed && candle.openTimeMs === latestOpenTimeMs);
+          const latest = candles.find((candle) => candle.symbol === symbol && candle.interval === "1h" &&
+            candle.isClosed && candle.openTimeMs === latestOpenTimeMs &&
+            candle.closeTimeMs === latestOpenTimeMs + hourMs - 1);
           if (!latest) throw new Error("Latest closed candle is unavailable");
           await ledger.processClosedCandle(latest, restAdapter);
-          if (ledger.getState().pausedSymbols[symbol] || ledger.getRuntimeError()) continue;
+          if (ledger.getState().pausedSymbols[symbol] || ledger.getRuntimeError()) {
+            failedSymbols.add(symbol);
+            continue;
+          }
           lastSuccessfullyProcessedAtMs = Math.max(lastSuccessfullyProcessedAtMs ?? 0, latest.closeTimeMs);
           delete runtimePausedSymbols[symbol];
-        } catch (error) { fail(symbol, error); }
+        } catch (error) {
+          failedSymbols.add(symbol);
+          fail(symbol, error);
+        }
       }
-      recovered = !stopped && generation === recoveryGeneration && stream.health.state === "live";
-      if (recovered && !Object.keys(ledger.getState().pausedSymbols).length && !ledger.getRuntimeError()) runtimeFailure = null;
+      recovered = !stopped && generation === recoveryGeneration && stream.health.state === "live" &&
+        failedSymbols.size === 0;
+      if (recovered && !Object.keys(ledger.getState().pausedSymbols).length && !ledger.getRuntimeError()) {
+        runtimeFailure = null;
+      }
     } catch (error) {
+      for (const symbol of SUPPORTED_SPOT_SYMBOLS) failedSymbols.add(symbol);
       for (const symbol of SUPPORTED_SPOT_SYMBOLS) fail(symbol, error);
     } finally {
       if (generation === recoveryGeneration) {
         recovering = false;
         if (recovered) flushBufferedCandles();
+        else scheduleRecoveryRetry();
         resolveStopWaiters();
       }
     }
@@ -155,6 +184,7 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
     previousConnection = health.state;
     if (health.state !== "live") {
       recoveryGeneration += 1;
+      clearRecoveryRetry();
       recovering = false;
       recovered = false;
       for (const symbol of SUPPORTED_SPOT_SYMBOLS) {
@@ -188,6 +218,7 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
     stop(): Promise<void> {
       if (stopped) return Promise.resolve();
       stopped = true;
+      clearRecoveryRetry();
       for (const symbol of SUPPORTED_SPOT_SYMBOLS) {
         try {
           ledger.recordRuntimeEvent?.(symbol, "runtime-shutdown", "Forward simulation service is shutting down");

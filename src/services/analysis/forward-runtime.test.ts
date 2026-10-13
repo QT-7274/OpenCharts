@@ -262,4 +262,35 @@ describe("forward simulation runtime", () => {
     expect(recordRuntimeEvent).toHaveBeenCalledTimes(SUPPORTED_SPOT_SYMBOLS.length);
     expect(recordRuntimeEvent).toHaveBeenCalledWith("BTCUSDT", "runtime-shutdown", expect.any(String));
   });
+
+  it("crypto-ai-analysis.RELIABILITY.1 keeps recovery incomplete and retries after a REST failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const stream = streamHarness();
+      const { ledger, processClosedCandle } = ledgerHarness();
+      const latestOpen = Math.floor(NOW / HOUR) * HOUR - HOUR;
+      let candleCalls = 0;
+      const restAdapter = {
+        getServerTime: vi.fn(async () => NOW),
+        getCandles: vi.fn(async ({ symbol }: { symbol: typeof SUPPORTED_SPOT_SYMBOLS[number] }) => {
+          candleCalls += 1;
+          if (candleCalls <= SUPPORTED_SPOT_SYMBOLS.length) throw new Error("temporary REST failure");
+          return [makeCandle(symbol, latestOpen)];
+        }),
+      } as never;
+      const runtime = createForwardRuntime({ ledger, stream, restAdapter, now: () => NOW });
+
+      stream.setHealth({ state: "live", lastMessageAtMs: NOW });
+      await Promise.resolve();
+      expect(runtime.getStatus().ready).toBe(false);
+      expect(processClosedCandle).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.waitFor(() => expect(runtime.getStatus().ready).toBe(true));
+      expect(candleCalls).toBeGreaterThan(SUPPORTED_SPOT_SYMBOLS.length);
+      await runtime.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

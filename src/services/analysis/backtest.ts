@@ -752,6 +752,56 @@ function calculateBuyAndHold(
   };
 }
 
+function validSignalTiming(event: BacktestAnalysisEvent): boolean {
+  const signal = event.signal;
+  return signal == null || (
+    (event.state === "enter" || event.state === "avoid") &&
+    signal.confirmedAtMs === event.timeMs &&
+    signal.validFromMs === signal.confirmedAtMs + 1 &&
+    signal.expiresAtMs > signal.validFromMs &&
+    signal.validFromMs > signal.confirmedAtMs
+  );
+}
+
+// crypto-ai-analysis.VALIDATION.6 crypto-ai-analysis.VALIDATION.14-2
+function validExecutionResult(
+  assets: readonly BacktestAssetData[],
+  analysisEvents: ReadonlyMap<SpotSymbol, readonly BacktestAnalysisEvent[]>,
+  period: BacktestPeriod,
+  execution: BacktestExecutionResult,
+): boolean {
+  const candlesBySymbol = new Map(assets.map((asset) => [
+    asset.symbol,
+    periodCandles(asset, period),
+  ]));
+  const signals = [...analysisEvents.entries()].flatMap(([symbol, events]) => events
+    .filter((event) => event.signal != null)
+    .map((event) => ({ symbol, signal: event.signal! })));
+  if (![...analysisEvents.values()].flat().every(validSignalTiming)) return false;
+
+  const tradeIds = new Set<string>();
+  for (const trade of execution.trades) {
+    if (tradeIds.has(trade.id) || !Number.isFinite(trade.entryTimeMs) ||
+      !Number.isFinite(trade.exitTimeMs) || trade.exitTimeMs < trade.entryTimeMs ||
+      !Number.isFinite(trade.quantity) || trade.quantity <= 0 || !Number.isFinite(trade.actualEntryPrice) ||
+      trade.actualEntryPrice <= 0 || !Number.isFinite(trade.averageExitPrice) || trade.averageExitPrice <= 0 ||
+      !Number.isFinite(trade.netPnl) || !Number.isFinite(trade.costs) || trade.costs < 0) return false;
+    tradeIds.add(trade.id);
+
+    const entryCandle = candlesBySymbol.get(trade.symbol)?.find((candle) =>
+      candle.openTimeMs === trade.entryTimeMs && candle.isClosed);
+    if (!entryCandle) return false;
+    const matchingSignal = signals.find(({ symbol, signal }) =>
+      symbol === trade.symbol && signal.strategyVersion === trade.strategyVersion &&
+      signal.validFromMs <= trade.entryTimeMs && trade.entryTimeMs < signal.expiresAtMs);
+    if (!matchingSignal) return false;
+  }
+
+  return Number.isFinite(execution.metrics.endingEquity) && execution.metrics.endingEquity >= 0 &&
+    Number.isFinite(execution.metrics.totalCosts) && execution.metrics.totalCosts >= 0 &&
+    assets.every((asset) => periodCandles(asset, period).every((candle) => candle.isClosed));
+}
+
 // crypto-ai-analysis.VALIDATION.6 crypto-ai-analysis.VALIDATION.6-1
 // crypto-ai-analysis.VALIDATION.7 crypto-ai-analysis.VALIDATION.7-1 crypto-ai-analysis.VALIDATION.8
 // crypto-ai-analysis.VALIDATION.8-1 crypto-ai-analysis.VALIDATION.9 crypto-ai-analysis.VALIDATION.9-1
@@ -942,8 +992,9 @@ function toPeriodResult(
   analysisEvents: ReadonlyMap<SpotSymbol, readonly BacktestAnalysisEvent[]>,
   period: BacktestPeriod,
   config: BacktestConfig,
+  options: { includeOpeningSignal?: boolean } = {},
 ): BacktestPeriodResult {
-  const result = simulateSpotExecution(assets, analysisEvents, period, config);
+  const result = simulateSpotExecution(assets, analysisEvents, period, config, options);
   return { period, ...result };
 }
 
@@ -1181,13 +1232,13 @@ export function runCryptoBacktest(
         .filter((candle) => candle.closeTimeMs <= requestedPeriod.endMs)
         .every((candle) => candle.isClosed),
     ),
-    nextBarExecution: [...candidateEvents.values()].flat().every((event) =>
-      !event.signal || (event.signal.confirmedAtMs === event.timeMs &&
-        event.signal.validFromMs === event.signal.confirmedAtMs + 1),
-    ),
+    nextBarExecution: [...candidateEvents.values()].flat().every(validSignalTiming) &&
+      validExecutionResult(assets, analysisEvents, portfolioOutOfSamplePeriod, portfolio.outOfSample),
     deterministicEngine: false,
   };
-  const deterministicReplay = simulateSpotExecution(assets, analysisEvents, portfolioOutOfSamplePeriod, config);
+  const deterministicReplay = simulateSpotExecution(assets, analysisEvents, portfolioOutOfSamplePeriod, config, {
+    includeOpeningSignal: true,
+  });
   validityChecks.deterministicEngine = JSON.stringify({ period: portfolio.outOfSample.period, ...deterministicReplay }) ===
     JSON.stringify(portfolio.outOfSample);
   const perSymbolProfitFactorCount = countSymbolsMeetingProfitFactor(

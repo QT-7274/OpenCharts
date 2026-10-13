@@ -145,12 +145,64 @@ function emptyState(): PaperLedgerState {
 function validLedger(value: unknown): value is PaperLedgerState {
   if (value == null || typeof value !== "object") return false;
   const ledger = value as Partial<PaperLedgerState>;
+  const validCheckpointMap = (map: unknown): boolean => map != null && typeof map === "object" &&
+    Object.entries(map).every(([symbol, value]) => isSpotSymbol(symbol as SpotSymbol) && Number.isFinite(value) && value >= 0);
+  const validPriceMap = (map: unknown): boolean => map != null && typeof map === "object" &&
+    Object.entries(map).every(([symbol, value]) => isSpotSymbol(symbol as SpotSymbol) && Number.isFinite(value) && value > 0);
+  const validOrder = (order: unknown): boolean => {
+    if (order == null || typeof order !== "object") return false;
+    const item = order as Partial<PaperOrder>;
+    const positiveFields: Array<keyof PaperOrder> = ["referencePrice", "entryLower", "entryUpper", "stopPrice", "takeProfit1Price",
+      "takeProfit2Price", "riskReward", "pullbackLow", "quantity", "activeStopPrice"];
+    const nonNegativeFields: Array<keyof PaperOrder> = ["remainingQuantity", "riskAmount", "reservedQuote", "entryFee", "entrySlippage",
+      "exitFees", "exitSlippage", "realizedNetPnl", "exitedQuantity"];
+    const finiteNumber = (key: keyof PaperOrder): boolean => typeof item[key] === "number" && Number.isFinite(item[key]);
+    const nonNegativeNumber = (key: keyof PaperOrder): boolean => finiteNumber(key) && (item[key] as number) >= 0;
+    const positiveNumber = (key: keyof PaperOrder): boolean => finiteNumber(key) && (item[key] as number) > 0;
+    return typeof item.id === "string" && item.id.length > 0 && typeof item.symbol === "string" &&
+      isSpotSymbol(item.symbol as SpotSymbol) &&
+      typeof item.status === "string" && ["pending", "open", "closed", "cancelled", "expired"].includes(item.status) &&
+      typeof item.snapshotId === "string" && item.snapshotId.length > 0 &&
+      typeof item.strategyVersion === "string" && item.strategyVersion.length > 0 &&
+      typeof item.backtestStatus === "string" && ["research-usable", "experimental", "invalid"].includes(item.backtestStatus) &&
+      validCostAssumptions(item.costAssumptions) &&
+      ["createdAtMs", "updatedAtMs", "analysisTimeMs", "validFromMs", "expiresAtMs"]
+        .every((key) => finiteNumber(key as keyof PaperOrder)) &&
+      positiveFields.every(positiveNumber) && nonNegativeFields.every(nonNegativeNumber) &&
+      item.remainingQuantity! <= item.quantity! && item.exitedQuantity! <= item.quantity! &&
+      (item.fillTimeMs === null || Number.isFinite(item.fillTimeMs)) &&
+      (item.actualEntryPrice === null || (typeof item.actualEntryPrice === "number" &&
+        Number.isFinite(item.actualEntryPrice) && item.actualEntryPrice > 0)) &&
+      (item.averageExitPrice === null || (typeof item.averageExitPrice === "number" &&
+        Number.isFinite(item.averageExitPrice) && item.averageExitPrice > 0)) &&
+      typeof item.partialTaken === "boolean" &&
+      (item.exitReason === null || (typeof item.exitReason === "string" &&
+        ["stop", "break-even", "take-profit-2"].includes(item.exitReason))) &&
+      (item.closedAtMs === null || Number.isFinite(item.closedAtMs));
+  };
+  const validEvent = (event: unknown): boolean => {
+    if (event == null || typeof event !== "object") return false;
+    const item = event as Partial<PaperTradingEvent>;
+    return typeof item.id === "string" && item.id.length > 0 && typeof item.symbol === "string" &&
+      isSpotSymbol(item.symbol as SpotSymbol) &&
+      ["signal", "order-created", "order-cancelled", "order-expired", "fill", "take-profit-1", "take-profit-2",
+        "stop", "break-even", "data-gap", "data-restored", "runtime-error", "runtime-shutdown"].includes(item.kind as string) &&
+      Number.isFinite(item.timeMs) && (item.snapshotId == null || typeof item.snapshotId === "string") &&
+      (item.strategyVersion == null || typeof item.strategyVersion === "string") &&
+      (item.orderId == null || typeof item.orderId === "string") &&
+      (item.price == null || Number.isFinite(item.price)) && (item.fee == null || Number.isFinite(item.fee)) &&
+      (item.slippage == null || Number.isFinite(item.slippage)) &&
+      (item.reason == null || typeof item.reason === "string");
+  };
+  const orders = Array.isArray(ledger.orders) && ledger.orders.every(validOrder);
+  const events = Array.isArray(ledger.events) && ledger.events.every(validEvent) &&
+    new Set(ledger.events.map((event) => event.id)).size === ledger.events.length;
   return ledger.schemaVersion === 1 && Number.isFinite(ledger.initialCapital) && ledger.initialCapital! > 0 &&
     Number.isFinite(ledger.cash) && ledger.cash! >= 0 && Array.isArray(ledger.orders) &&
-    Array.isArray(ledger.events) && ledger.lastProcessedOpenTimeMs != null &&
-    typeof ledger.lastProcessedOpenTimeMs === "object" && ledger.lastPrices != null &&
-    typeof ledger.lastPrices === "object" && ledger.pausedSymbols != null && typeof ledger.pausedSymbols === "object" &&
-    (ledger.lastAnalyzedOpenTimeMs == null || typeof ledger.lastAnalyzedOpenTimeMs === "object");
+    Array.isArray(ledger.events) && orders && events && validCheckpointMap(ledger.lastProcessedOpenTimeMs) &&
+    validPriceMap(ledger.lastPrices) && ledger.pausedSymbols != null && typeof ledger.pausedSymbols === "object" &&
+    Object.entries(ledger.pausedSymbols).every(([symbol, reason]) => isSpotSymbol(symbol) && typeof reason === "string") &&
+    (ledger.lastAnalyzedOpenTimeMs == null || validCheckpointMap(ledger.lastAnalyzedOpenTimeMs));
 }
 
 function cloneState(state: PaperLedgerState): PaperLedgerState {
@@ -484,7 +536,7 @@ function validClosedHourly(candle: MarketCandle, expectedSymbol?: SpotSymbol): b
 
 export function createCryptoPaperLedger({ storage, now = Date.now, afterCandle }: PaperLedgerOptions = {}) {
   let state = emptyState();
-  let storageError: string | null = null;
+  let storageError: string | null = storage ? null : "模拟账本存储不可用";
   let sequence = 0;
   const drafts = new Map<string, { draft: PaperOrderDraft; attempt: AnalysisAttempt }>();
   let processing: Promise<void> = Promise.resolve();
@@ -524,7 +576,8 @@ export function createCryptoPaperLedger({ storage, now = Date.now, afterCandle }
   function commit(next: PaperLedgerState): void {
     try {
       assertPaperAccountSolvent(next);
-      storage?.setItem(CRYPTO_PAPER_LEDGER_KEY, JSON.stringify(next));
+      if (!storage?.setItem) throw new Error("模拟账本存储不可用");
+      storage.setItem(CRYPTO_PAPER_LEDGER_KEY, JSON.stringify(next));
       state = next;
       storageError = null;
       for (const listener of listeners) listener(snapshot());
@@ -701,8 +754,10 @@ export function createCryptoPaperLedger({ storage, now = Date.now, afterCandle }
     const checkpoints = [processedOpen, analyzedOpen].filter((value): value is number => value != null);
     const checkpoint = checkpoints.length ? Math.min(...checkpoints) : null;
     if (checkpoint != null && candle.openTimeMs <= checkpoint) {
+      // crypto-ai-analysis.RELIABILITY.1: a verified duplicate checkpoint restores
+      // any recoverable runtime pause without replaying an already processed fill.
       if (candle.openTimeMs === checkpoint && processedOpen === checkpoint && analyzedOpen === checkpoint &&
-        state.pausedSymbols[candle.symbol]?.startsWith("market-data-")) {
+        state.pausedSymbols[candle.symbol]) {
         const next = cloneState(state);
         delete next.pausedSymbols[candle.symbol];
         addEvent(next, { id: `${candle.symbol}:reconnected:${now()}`, kind: "data-restored",

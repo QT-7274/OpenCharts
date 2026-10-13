@@ -33,25 +33,114 @@ function validPeriod(period) {
     period.startMs <= period.endMs;
 }
 
+function finiteOrNull(value) {
+  return value === null || Number.isFinite(value);
+}
+
+function nonNegativeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function validProfitFactor(value) {
+  return value === null || value === "infinite" || (Number.isFinite(value) && value >= 0);
+}
+
+function validMetrics(metrics) {
+  if (!metrics || typeof metrics !== "object") return false;
+  const integerFields = ["signalCount", "tradeCount", "skippedSignalCount", "maxConsecutiveLosses"];
+  const finiteFields = [
+    "netReturnPct", "totalCosts", "endingEquity",
+  ];
+  const nullableFiniteFields = [
+    "annualizedReturnPct", "averageNetPnl", "averageHoldingHours", "averageActualRiskReward", "sharpeRatio",
+  ];
+  if (!integerFields.every((key) => nonNegativeInteger(metrics[key])) ||
+    !finiteFields.every((key) => Number.isFinite(metrics[key])) ||
+    !nullableFiniteFields.every((key) => finiteOrNull(metrics[key])) ||
+    !Number.isFinite(metrics.maxDrawdownPct) || metrics.maxDrawdownPct < 0 || metrics.maxDrawdownPct > 100 ||
+    !finiteOrNull(metrics.winRatePct) || (metrics.winRatePct !== null &&
+      (metrics.winRatePct < 0 || metrics.winRatePct > 100)) ||
+    !validProfitFactor(metrics.profitFactor) || metrics.totalCosts < 0 || metrics.endingEquity < 0 ||
+    !metrics.skipReasons || typeof metrics.skipReasons !== "object" ||
+    !Object.values(metrics.skipReasons).every(nonNegativeInteger) ||
+    !metrics.strategyStateCounts || typeof metrics.strategyStateCounts !== "object") return false;
+  return ["watch", "setup", "enter", "avoid"].every((key) =>
+    nonNegativeInteger(metrics.strategyStateCounts[key]));
+}
+
+function validTrade(trade) {
+  return trade && typeof trade === "object" && typeof trade.id === "string" && trade.id.length > 0 &&
+    SUPPORTED_SYMBOLS.includes(trade.symbol) && Number.isFinite(trade.entryTimeMs) &&
+    Number.isFinite(trade.exitTimeMs) && trade.entryTimeMs <= trade.exitTimeMs &&
+    ["theoreticalEntryPrice", "actualEntryPrice", "averageExitPrice", "stopPrice",
+      "takeProfit1Price", "takeProfit2Price", "quantity"].every((key) =>
+      Number.isFinite(trade[key]) && trade[key] > 0) &&
+    Number.isFinite(trade.netPnl) && Number.isFinite(trade.costs) && trade.costs >= 0 &&
+    Number.isFinite(trade.actualRisk) && trade.actualRisk >= 0 && finiteOrNull(trade.actualRiskReward) &&
+    Number.isFinite(trade.holdingHours) && trade.holdingHours >= 0 &&
+    ["stop", "break-even", "take-profit-2", "period-end"].includes(trade.exitReason) &&
+    typeof trade.strategyVersion === "string" && trade.strategyVersion.length > 0;
+}
+
+function validBuyAndHold(value) {
+  return value && typeof value === "object" &&
+    ["netReturnPct", "maxDrawdownPct", "netReturnDifferencePct", "maxDrawdownDifferencePct"]
+      .every((key) => Number.isFinite(value[key])) &&
+    value.maxDrawdownPct >= 0 && value.maxDrawdownPct <= 100 &&
+    finiteOrNull(value.sharpeRatio) && finiteOrNull(value.sharpeDifference);
+}
+
 function validResult(result) {
   const metrics = result?.metrics;
-  return validPeriod(result?.period) && Array.isArray(result.trades) && result.buyAndHold &&
-    Number.isInteger(metrics?.tradeCount) && metrics.tradeCount >= 0 &&
-    Number.isFinite(metrics.maxDrawdownPct) && metrics.maxDrawdownPct >= 0 && metrics.maxDrawdownPct <= 100 &&
-    Number.isFinite(metrics.netReturnPct) &&
-    (metrics.profitFactor === null || metrics.profitFactor === "infinite" ||
-      (Number.isFinite(metrics.profitFactor) && metrics.profitFactor >= 0));
+  return validPeriod(result?.period) && validMetrics(metrics) && Array.isArray(result.trades) &&
+    result.trades.every(validTrade) && validBuyAndHold(result.buyAndHold);
+}
+
+function validRobustness(robustness) {
+  if (!robustness || typeof robustness !== "object" || !Array.isArray(robustness.walkForward) ||
+    robustness.walkForward.length < 3 || !Array.isArray(robustness.marketRegimes) ||
+    !Array.isArray(robustness.parameterSensitivity)) return false;
+
+  const folds = [...robustness.walkForward].sort((a, b) => (a?.id ?? 0) - (b?.id ?? 0));
+  if (!folds.every((fold, index) => fold && Number.isSafeInteger(fold.id) && fold.id > 0 &&
+    (index === 0 || folds[index - 1].id < fold.id) && validPeriod(fold.trainingPeriod) &&
+    validPeriod(fold.testPeriod) && fold.trainingPeriod.endMs < fold.testPeriod.startMs &&
+    typeof fold.sampleSufficient === "boolean" && validMetrics(fold.metrics))) return false;
+  for (let index = 1; index < folds.length; index += 1) {
+    if (folds[index - 1].testPeriod.endMs >= folds[index].testPeriod.startMs) return false;
+  }
+
+  const regimes = new Set(robustness.marketRegimes.map((item) => item?.regime));
+  if (regimes.size !== 4 || !["bull", "sideways", "bear", "unknown"].every((regime) => regimes.has(regime)) ||
+    !robustness.marketRegimes.every((item) => item && Number.isSafeInteger(item.tradeCount) && item.tradeCount >= 0 &&
+      Number.isFinite(item.netPnl) && finiteOrNull(item.winRatePct) &&
+      (item.winRatePct === null || (item.winRatePct >= 0 && item.winRatePct <= 100)) &&
+      validProfitFactor(item.profitFactor))) return false;
+
+  const sensitivity = robustness.parameterSensitivity;
+  const scores = sensitivity.map((item) => item?.minimumScore);
+  const versions = sensitivity.map((item) => item?.strategyVersion);
+  return scores.length === 3 && [65, 70, 75].every((score) => scores.includes(score)) &&
+    new Set(scores).size === 3 && new Set(versions).size === 3 &&
+    sensitivity.every((item) => item && typeof item.strategyVersion === "string" &&
+      item.strategyVersion.length > 0 && item.evaluationScope === "research-only" &&
+      validPeriod(item.period) && validMetrics(item.metrics));
 }
 
 // crypto-ai-analysis.VALIDATION.18-1
 function completeReport(report) {
-  return report && Number.isFinite(report.generatedAtMs) && validPeriod(report.requestedPeriod) &&
+  return report && typeof report === "object" && report.strategyVersion === "trend-pullback-v1" &&
+    ["research-usable", "experimental", "invalid"].includes(report.status) &&
+    typeof report.statusReason === "string" && Number.isFinite(report.generatedAtMs) &&
+    validPeriod(report.requestedPeriod) &&
     validCostAssumptions(report.costAssumptions) &&
     validResult(report.portfolio?.research) && validResult(report.portfolio?.outOfSample) &&
     SUPPORTED_SYMBOLS.every((symbol) => validResult(report.symbols?.[symbol]?.research) &&
       validResult(report.symbols?.[symbol]?.outOfSample)) &&
-    Array.isArray(report.robustness?.walkForward) && Array.isArray(report.robustness?.marketRegimes) &&
-    Array.isArray(report.robustness?.parameterSensitivity);
+    report.validityChecks && typeof report.validityChecks === "object" &&
+    ["closedCandlesOnly", "nextBarExecution", "deterministicEngine"]
+      .every((key) => typeof report.validityChecks[key] === "boolean") &&
+    validRobustness(report.robustness);
 }
 
 export function deriveBacktestStatus(report) {
@@ -120,6 +209,10 @@ export function readBacktestRecord(storage) {
       return createInvalidBacktestRecord(record.strategyVersion, record.updatedAtMs, record.statusReason, {
         taskId: record.taskId,
       });
+    }
+    if (!completeReport(record.report)) {
+      return createInvalidBacktestRecord(record.strategyVersion, record.updatedAtMs,
+        "Persisted backtest report failed structural validation", { taskId: record.taskId });
     }
     const validated = createBacktestRecord(record.report, record.costAssumptions, record.updatedAtMs, {
       taskId: record.taskId,
