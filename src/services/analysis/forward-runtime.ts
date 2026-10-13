@@ -9,8 +9,18 @@ interface ForwardRuntimeOptions {
   now?: () => number;
 }
 
+// crypto-ai-analysis.RELIABILITY.2
+function sanitizeRuntimeReason(value: unknown): string {
+  return String(value)
+    .replace(/[\r\n]+/g, " ")
+    .replace(/(?:Bearer\s+|(?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,;]+/gi, "[redacted]")
+    .replace(/(?:file:\/\/|\/(?:Users|home|private|tmp|var)\/|[A-Za-z]:\\)[^\s]+/g, "[redacted-path]")
+    .slice(0, 500);
+}
+
 // crypto-ai-analysis.FORWARD_SIMULATION.4 crypto-ai-analysis.FORWARD_SIMULATION.10
-// crypto-ai-analysis.RELIABILITY.1 crypto-ai-analysis.RELIABILITY.3 crypto-ai-analysis.LONG_RUNNING.1
+// crypto-ai-analysis.RELIABILITY.1 crypto-ai-analysis.RELIABILITY.2 crypto-ai-analysis.RELIABILITY.3
+// crypto-ai-analysis.LONG_RUNNING.1 crypto-ai-analysis.LONG_RUNNING.2 crypto-ai-analysis.LONG_RUNNING.4
 export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.now }: ForwardRuntimeOptions) {
   let stopped = false;
   let recovering = false;
@@ -19,6 +29,7 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
   let recoveryGeneration = 0;
   let runtimeFailure: string | null = null;
   let lastSuccessfullyProcessedAtMs: number | null = null;
+  const runtimePausedSymbols: Partial<Record<typeof SUPPORTED_SPOT_SYMBOLS[number], string>> = {};
   const bufferedClosedCandles = new Map<string, Parameters<typeof ledger.processClosedCandle>[0]>();
   const queuedClosedCandles: Array<Parameters<typeof ledger.processClosedCandle>[0]> = [];
   let processingQueuedCandles = false;
@@ -32,7 +43,8 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
   }
 
   function fail(symbol: typeof SUPPORTED_SPOT_SYMBOLS[number], error: unknown) {
-    runtimeFailure = error instanceof Error ? error.message : "Forward simulation failed";
+    runtimeFailure = sanitizeRuntimeReason(error instanceof Error ? error.message : "Forward simulation failed");
+    runtimePausedSymbols[symbol] = runtimeFailure;
     try { ledger.pauseSymbol(symbol, runtimeFailure); } catch { /* Storage errors remain visible in status. */ }
   }
 
@@ -54,6 +66,7 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
           await ledger.processClosedCandle(candle, restAdapter);
           if (!ledger.getState().pausedSymbols[candle.symbol] && !ledger.getRuntimeError()) {
             lastSuccessfullyProcessedAtMs = Math.max(lastSuccessfullyProcessedAtMs ?? 0, candle.closeTimeMs);
+            delete runtimePausedSymbols[candle.symbol];
           }
         } catch (error: unknown) {
           fail(candle.symbol, error);
@@ -120,6 +133,7 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
           await ledger.processClosedCandle(latest, restAdapter);
           if (ledger.getState().pausedSymbols[symbol] || ledger.getRuntimeError()) continue;
           lastSuccessfullyProcessedAtMs = Math.max(lastSuccessfullyProcessedAtMs ?? 0, latest.closeTimeMs);
+          delete runtimePausedSymbols[symbol];
         } catch (error) { fail(symbol, error); }
       }
       recovered = !stopped && generation === recoveryGeneration && stream.health.state === "live";
@@ -144,7 +158,9 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
       recovering = false;
       recovered = false;
       for (const symbol of SUPPORTED_SPOT_SYMBOLS) {
-        try { ledger.pauseSymbol(symbol, `market-data-${health.state}`); } catch {}
+        const reason = `market-data-${health.state}`;
+        runtimePausedSymbols[symbol] = reason;
+        try { ledger.pauseSymbol(symbol, reason); } catch {}
       }
     } else { void recover(); }
   });
@@ -159,11 +175,12 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
         connection: health.state,
         shuttingDown: stopped,
         ready: !stopped && health.state === "live" && fresh && recovered && !recovering && pending === 0 &&
-          !storageError && Object.keys(ledger.getState().pausedSymbols).length === 0,
+          !storageError && Object.keys(runtimePausedSymbols).length === 0 &&
+          Object.keys(ledger.getState().pausedSymbols).length === 0,
         recovering,
         lastMarketAtMs: health.lastMessageAtMs,
         lastSuccessfullyProcessedAtMs,
-        pausedSymbols: ledger.getState().pausedSymbols,
+        pausedSymbols: { ...runtimePausedSymbols, ...ledger.getState().pausedSymbols },
         storageStatus: storageError ? "error" as const : "ok" as const,
         runtimeFailure,
       };
@@ -172,7 +189,11 @@ export function createForwardRuntime({ ledger, stream, restAdapter, now = Date.n
       if (stopped) return Promise.resolve();
       stopped = true;
       for (const symbol of SUPPORTED_SPOT_SYMBOLS) {
-        ledger.recordRuntimeEvent?.(symbol, "runtime-shutdown", "Forward simulation service is shutting down");
+        try {
+          ledger.recordRuntimeEvent?.(symbol, "runtime-shutdown", "Forward simulation service is shutting down");
+        } catch {
+          runtimeFailure = "Unable to persist runtime shutdown event";
+        }
       }
       unsubscribeClosed();
       unsubscribeHealth();

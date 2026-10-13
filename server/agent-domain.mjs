@@ -127,8 +127,8 @@ function findAttempt(analysisPipeline, snapshotId) {
   if (typeof snapshotId !== "string" || snapshotId.length === 0 || snapshotId.length > 240) {
     throw new AgentDomainError("A valid analysis snapshot ID is required", 400);
   }
-  const current = analysisPipeline.getHistory?.().find((attempt) => attempt.snapshotId === snapshotId);
-  if (current) return current;
+  // crypto-ai-analysis.AGENT_ACCESS.5 crypto-ai-analysis.FORWARD_SIMULATION.10-1
+  // Agent order drafts and snapshots must use durable server records, never volatile history.
   const record = analysisPipeline.getRecords?.().find((item) => item.snapshotId === snapshotId);
   return record ?? null;
 }

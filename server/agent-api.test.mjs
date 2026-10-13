@@ -219,3 +219,15 @@ test("crypto-ai-analysis.AGENT_ACCESS.2 rejects unsupported symbols, intervals a
   await assert.rejects(domain.getMarketSnapshot({ symbol: "BTCUSDT", limit: 501 }), { statusCode: 400 });
   assert.throws(() => domain.getAnalysisHistory({ limit: 0 }), { statusCode: 400 });
 });
+
+test("crypto-ai-analysis.AGENT_ACCESS.5 crypto-ai-analysis.FORWARD_SIMULATION.10-1 ignores volatile snapshots", () => {
+  const domain = createAgentDomain({
+    restAdapter: { getServerTime: async () => 1, getSpotQuote: async () => ({}), getCandles: async () => [] },
+    analysisPipeline: { getHistory: () => [attempt], getRecords: () => [] },
+    ledger: { getState: () => ({}), getRiskContext: () => ({}), getCostComparison: () => ({}), getRuntimeError: () => null },
+    backtestStorage: { getItem: () => null },
+  });
+
+  assert.throws(() => domain.getAnalysisSnapshot({ snapshotId: "snapshot-1" }), { statusCode: 404 });
+  assert.throws(() => domain.createPaperOrderDraft({ snapshotId: "snapshot-1" }), { statusCode: 404 });
+});

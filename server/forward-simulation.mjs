@@ -49,6 +49,8 @@ analysisPipeline.subscribe((attempt) => ledger.recordAnalysis(attempt));
 
 const subscriptions = SUPPORTED_SPOT_SYMBOLS.map((symbol) => ({ symbol, interval: "1h" }));
 const runtime = createForwardRuntime({ ledger, stream, restAdapter });
+// crypto-ai-analysis.LONG_RUNNING.4
+// The Agent domain intentionally receives the same adapters, pipeline, ledger and backtest store.
 const agentDomain = createAgentDomain({
   restAdapter,
   analysisPipeline,

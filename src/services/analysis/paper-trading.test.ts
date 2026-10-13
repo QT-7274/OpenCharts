@@ -105,6 +105,15 @@ describe("isolated crypto paper ledger", () => {
     expect(ledger.getState().events[0]?.reason).toBe("event-0");
   });
 
+  it("crypto-ai-analysis.RELIABILITY.2 redacts secrets from runtime events", () => {
+    const ledger = createCryptoPaperLedger({ now: () => fixedNow });
+
+    ledger.recordRuntimeEvent("BTCUSDT", "runtime-error", "/Users/private/.env OPENAI_API_KEY=secret");
+
+    const reason = ledger.getState().events[0]?.reason ?? "";
+    expect(reason).not.toMatch(/OPENAI_API_KEY|\/Users\/private/);
+  });
+
   it("crypto-ai-analysis.RISK_AND_PAPER_TRADING.11-1 cancels pending orders on invalid analysis without requiring a snapshot", () => {
     const ledger = createCryptoPaperLedger({ now: () => fixedNow });
     ledger.submitDraft(ledger.createDraft(makeAttempt(), "experimental"));

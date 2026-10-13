@@ -92,6 +92,48 @@ describe("forward simulation runtime", () => {
     runtime.stop();
   });
 
+  it("crypto-ai-analysis.LONG_RUNNING.2 crypto-ai-analysis.RELIABILITY.2 pauses and redacts analysis failures", async () => {
+    const stream = streamHarness();
+    const { ledger, processClosedCandle } = ledgerHarness();
+    processClosedCandle.mockRejectedValueOnce(new Error("/Users/private/.env OPENAI_API_KEY=secret"));
+    const runtime = createForwardRuntime({ ledger, stream, restAdapter: {
+      getServerTime: vi.fn(async () => NOW),
+      getCandles: vi.fn(async ({ symbol }: { symbol: typeof SUPPORTED_SPOT_SYMBOLS[number] }) => [
+        makeCandle(symbol, Math.floor(NOW / HOUR) * HOUR - HOUR),
+      ]),
+    } as never, now: () => NOW });
+
+    stream.setHealth({ state: "live", lastMessageAtMs: NOW });
+    await vi.waitFor(() => expect(runtime.getStatus().pausedSymbols.BTCUSDT).toBeTruthy());
+
+    const status = runtime.getStatus();
+    expect(status.ready).toBe(false);
+    expect(String(status.runtimeFailure)).not.toMatch(/OPENAI_API_KEY|\/Users\/private/);
+    expect(String(status.pausedSymbols.BTCUSDT)).not.toMatch(/OPENAI_API_KEY|\/Users\/private/);
+    await runtime.stop();
+  });
+
+  it("crypto-ai-analysis.LONG_RUNNING.2 keeps storage failures visible for the affected symbol", async () => {
+    const stream = streamHarness();
+    const { ledger, processClosedCandle } = ledgerHarness();
+    processClosedCandle.mockRejectedValueOnce(new Error("storage commit failed"));
+    const storageError = "Disk unavailable";
+    const runtimeLedger = Object.assign({}, ledger, { getRuntimeError: () => storageError }) as never;
+    const runtime = createForwardRuntime({ ledger: runtimeLedger, stream, restAdapter: {
+      getServerTime: vi.fn(async () => NOW),
+      getCandles: vi.fn(async ({ symbol }: { symbol: typeof SUPPORTED_SPOT_SYMBOLS[number] }) => [
+        makeCandle(symbol, Math.floor(NOW / HOUR) * HOUR - HOUR),
+      ]),
+    } as never, now: () => NOW });
+
+    stream.setHealth({ state: "live", lastMessageAtMs: NOW });
+    await vi.waitFor(() => expect(runtime.getStatus().pausedSymbols.BTCUSDT).toBeTruthy());
+
+    expect(runtime.getStatus().storageStatus).toBe("error");
+    expect(runtime.getStatus().ready).toBe(false);
+    await runtime.stop();
+  });
+
   it("crypto-ai-analysis.FORWARD_SIMULATION.10 ignores stale recovery after a disconnect", async () => {
     const stream = streamHarness();
     const { ledger, processClosedCandle } = ledgerHarness();
